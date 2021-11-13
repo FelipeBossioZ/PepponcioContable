@@ -1,0 +1,5 @@
+ID: AM001Manantial, Marca: AguaClara, Precio: $ 2000.0, Litros: 1.0, Origen : ManantialID: AR003Brisa, Marca: Agua&Agua, Precio: $ 2500.0, Litros: 1500.0, Origen : ReservaID: AO004Oasis, Marca: Oasis, Precio: $ 3000.0, Litros: 1200.0, Origen : OasisID: GC001CocaCol, Marca: CocaCola, Precio: $ 1000.0, Litros: 0.7, Azúcar(%) : 0.1, Promoción: false
+ID: GC002Sprite, Marca: CocaCola, Precio: $ 1800.0, Litros: 0.7, Azúcar(%) : 0.5, Promoción: true
+ID: GP002Colombiana, Marca: Postobon, Precio: $ 2000.0, Litros: 0.7, Azúcar(%) : 0.3, Promoción: false
+ID: GC003Fanta, Marca: CocaCola, Precio: $ 2700.0, Litros: 0.7, Azúcar(%) : 0.8, Promoción: true
+ID: GP004Uva, Marca: Postobon, Precio: $ 4000.0, Litros: 0.7, Azúcar(%) : 0.25, Promoción: false
