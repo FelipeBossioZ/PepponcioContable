@@ -1,4 +1,10 @@
+# backend/facturacion/models.py
+# Reemplaza el método save() de ItemFactura con este:
+
 from django.db import models
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+from decimal import Decimal
 from terceros.models import Tercero
 
 class Factura(models.Model):
@@ -19,13 +25,26 @@ class Factura(models.Model):
     impuestos = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     estado = models.CharField(max_length=10, choices=ESTADO_CHOICES, default='borrador')
-
-    # Campos para la integración futura con la DIAN
     cufe = models.CharField(max_length=255, blank=True, null=True, unique=True, verbose_name="CUFE")
     qr_code = models.TextField(blank=True, null=True, verbose_name="Código QR")
-
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
+
+    def calcular_totales(self):
+        """Recalcula los totales de la factura basándose en sus items"""
+        subtotal = Decimal('0')
+        impuestos = Decimal('0')
+        
+        for item in self.items.all():
+            subtotal_item = item.cantidad * item.precio_unitario
+            subtotal += subtotal_item
+            if item.lleva_iva:
+                impuestos += subtotal_item * Decimal('0.19')
+        
+        self.subtotal = subtotal
+        self.impuestos = impuestos.quantize(Decimal('0.01'))
+        self.total = subtotal + impuestos
+        self.save()
 
     def __str__(self):
         return f"Factura #{self.id} - {self.cliente.nombre_razon_social}"
@@ -57,3 +76,14 @@ class ItemFactura(models.Model):
     class Meta:
         verbose_name = "Ítem de Factura"
         verbose_name_plural = "Ítems de Factura"
+
+# Signals para actualizar totales automáticamente
+@receiver(post_save, sender=ItemFactura)
+def actualizar_totales_factura_on_save(sender, instance, **kwargs):
+    """Actualiza los totales cuando se guarda un item"""
+    instance.factura.calcular_totales()
+
+@receiver(post_delete, sender=ItemFactura)
+def actualizar_totales_factura_on_delete(sender, instance, **kwargs):
+    """Actualiza los totales cuando se elimina un item"""
+    instance.factura.calcular_totales()
