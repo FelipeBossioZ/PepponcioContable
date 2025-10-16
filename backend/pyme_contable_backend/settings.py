@@ -139,10 +139,14 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
+        # 'rest_framework.permissions.IsAuthenticated',  # Comentado para desarrollo
+        'rest_framework.permissions.AllowAny',  # Permite acceso sin autenticación
     ),
     'EXCEPTION_HANDLER': 'pyme_contable_backend.exceptions.custom_exception_handler'
 }
+
+# IMPORTANTE: Esta configuración es SOLO para desarrollo
+# En producción, SIEMPRE vuelve a IsAuthenticated
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173", 
