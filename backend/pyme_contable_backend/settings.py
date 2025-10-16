@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "corsheaders",
 
     # Frameworks de terceros
     "rest_framework",
@@ -51,6 +52,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -84,12 +86,9 @@ WSGI_APPLICATION = "pyme_contable_backend.wsgi.application"
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "pyme_contable_db",
-        "USER": "postgres", # Cambia esto a tu usuario de PostgreSQL
-        "PASSWORD": "password", # Cambia esto a tu contraseña
-        "HOST": "localhost", # O la IP de tu servidor de base de datos
-        "PORT": "5432",
+        "ENGINE": "django.db.backends.sqlite3",
+        # Esto creará un archivo db.sqlite3 en la raíz de tu backend
+        "NAME": BASE_DIR / 'db.sqlite3', 
     }
 }
 
@@ -144,3 +143,8 @@ REST_FRAMEWORK = {
     ),
     'EXCEPTION_HANDLER': 'pyme_contable_backend.exceptions.custom_exception_handler'
 }
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173", 
+    "http://127.0.0.1:5173",
+]
