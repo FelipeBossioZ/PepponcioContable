@@ -1,266 +1,303 @@
-// frontend/src/pages/Facturacion.jsx
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { 
-  FileText, 
-  Plus, 
-  Search, 
-  Download, 
-  Send, 
-  DollarSign,
-  Calendar,
-  User,
-  CheckCircle,
-  Clock,
-  XCircle
-} from 'lucide-react';
+  //frontend/src/pages/facturacion.jsx
 
-const Facturacion = () => {
-  const [facturas, setFacturas] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [filtro, setFiltro] = useState('todas');
 
-  useEffect(() => {
-    fetchFacturas();
-  }, []);
+import { useMemo, useState } from "react";
+import { Download, Plus, Search, Edit2, Trash2 } from "lucide-react";
+import {
+  useInvoices,
+  useCreateInvoice,
+  useUpdateInvoice,
+  useDeleteInvoice,
+} from "../hooks/useInvoices";
+import InvoiceForm from "../components/facturacion/InvoiceForm";
 
-  const fetchFacturas = async () => {
-    try {
-      const response = await axios.get('http://localhost:8000/api/facturacion/facturas/');
-      setFacturas(response.data);
-      setError(null);
-    } catch (err) {
-      setError('Error al cargar facturas. Verifica que el backend esté corriendo.');
-      console.error('Error:', err);
-    } finally {
-      setLoading(false);
+
+const BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+const fmtMoney = (n) =>
+  new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 2,
+  }).format(n ?? 0);
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString("es-CO") : "");
+
+function EstadoBadge({ estado }) {
+  const map = {
+    borrador: "bg-gray-100 text-gray-800",
+    emitida: "bg-blue-100 text-blue-800",
+    pagada: "bg-green-100 text-green-800",
+    anulada: "bg-red-100 text-red-800",
+  };
+  const cls = map[estado] || map.borrador;
+  const label = (estado || "borrador")[0].toUpperCase() + (estado || "borrador").slice(1);
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+// Modal simple reutilizable
+function Modal({ open, onClose, title, children, footer }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white w-[95vw] max-w-lg rounded-xl shadow-xl">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <h3 className="font-semibold">{title}</h3>
+          <button className="text-gray-500" onClick={onClose}>×</button>
+        </div>
+        <div className="p-4">{children}</div>
+        {footer && <div className="px-4 py-3 border-t">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+export default function Facturacion() {
+  const [openPdf, setOpenPdf] = useState(null); // { id, numero } | null
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState(null);          // objeto factura o null
+  const [openForm, setOpenForm] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null);    // { id, numero, estado } o null
+
+  const { data = [], isLoading, isError, error } = useInvoices({});
+  const createM = useCreateInvoice({});
+  const updateM = useUpdateInvoice({});
+  const deleteM = useDeleteInvoice({});
+
+  // Filtrado por texto (número / cliente)
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return data;
+    return data.filter((f) =>
+      String(f.numero).toLowerCase().includes(q) ||
+      String(f.tercero_nombre ?? "").toLowerCase().includes(q)
+    );
+  }, [data, search]);
+
+  const onNew = () => {
+    setEditing(null);
+    setOpenForm(true);
+  };
+  const onEdit = (inv) => {
+    setEditing(inv);
+    setOpenForm(true);
+  };
+
+  const onSubmit = (payload) => {
+    if (editing) {
+      updateM.mutate(
+        { id: editing.id, ...payload },
+        { onSuccess: () => setOpenForm(false) }
+      );
+    } else {
+      createM.mutate(payload, { onSuccess: () => setOpenForm(false) });
     }
   };
 
-  const getEstadoBadge = (estado) => {
-    const badges = {
-      'borrador': { color: 'bg-gray-100 text-gray-800', icon: Clock },
-      'emitida': { color: 'bg-blue-100 text-blue-800', icon: Send },
-      'pagada': { color: 'bg-green-100 text-green-800', icon: CheckCircle },
-      'anulada': { color: 'bg-red-100 text-red-800', icon: XCircle }
-    };
-    
-    const badge = badges[estado] || badges['borrador'];
-    const Icon = badge.icon;
-    
-    return (
-      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${badge.color}`}>
-        <Icon className="w-3 h-3 mr-1" />
-        {estado.charAt(0).toUpperCase() + estado.slice(1)}
-      </span>
-    );
+  const onAskDelete = (inv) => {
+    setConfirmDel(inv); // abre modal de confirmación
+  };
+  const onConfirmDelete = () => {
+    if (!confirmDel) return;
+    deleteM.mutate(confirmDel.id, {
+      onSettled: () => setConfirmDel(null),
+    });
   };
 
-  const facturasFiltradas = facturas.filter(factura => {
-    if (filtro === 'todas') return true;
-    return factura.estado === filtro;
-  });
-
-  // Calcular estadísticas
-  const stats = {
-    total: facturas.length,
-    emitidas: facturas.filter(f => f.estado === 'emitida').length,
-    pagadas: facturas.filter(f => f.estado === 'pagada').length,
-    totalVentas: facturas.reduce((sum, f) => sum + parseFloat(f.total || 0), 0)
+  const exportCSV = () => {
+    const rows = [
+      ["id", "numero", "cliente", "fecha", "total", "estado"],
+      ...filtered.map((f) => [
+        f.id,
+        f.numero,
+        f.tercero_nombre ?? "",
+        f.fecha ?? "",
+        f.total ?? 0,
+        f.estado ?? "borrador",
+      ]),
+    ];
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "facturas.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Cargando facturas...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-8">
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
-          {error}
-        </div>
-      </div>
-    );
-  }
+  if (isLoading) return <div className="p-6">Cargando facturas…</div>;
+  if (isError) return <div className="p-6 text-red-700">Error: {error?.message || "No se pudo cargar"}</div>;
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Facturación</h1>
-            <p className="mt-2 text-gray-600">Gestión de facturas de venta</p>
-          </div>
-          <button className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
-            <Plus className="h-5 w-5 mr-2" />
-            Nueva Factura
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Facturación</h1>
+          <p className="mt-1 text-gray-600">Gestiona tus facturas de venta</p>
+        </div>
+        <div className="flex gap-3">
+          <button onClick={exportCSV} className="flex items-center px-4 py-2 border rounded-lg hover:bg-gray-50">
+            <Download className="h-4 w-4 mr-2" /> Exportar
+          </button>
+          <button onClick={onNew} className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+            <Plus className="h-4 w-4 mr-2" /> Nuevo
           </button>
         </div>
       </div>
 
-      {/* Estadísticas */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Total Facturas</p>
-              <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
-            </div>
-            <FileText className="h-8 w-8 text-gray-400" />
-          </div>
-        </div>
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Emitidas</p>
-              <p className="text-2xl font-bold text-blue-600">{stats.emitidas}</p>
-            </div>
-            <Send className="h-8 w-8 text-blue-400" />
-          </div>
-        </div>
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Pagadas</p>
-              <p className="text-2xl font-bold text-green-600">{stats.pagadas}</p>
-            </div>
-            <CheckCircle className="h-8 w-8 text-green-400" />
-          </div>
-        </div>
-        <div className="bg-white p-4 rounded-lg border border-gray-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Total Ventas</p>
-              <p className="text-xl font-bold text-indigo-600">
-                ${stats.totalVentas.toLocaleString('es-CO')}
-              </p>
-            </div>
-            <DollarSign className="h-8 w-8 text-indigo-400" />
-          </div>
-        </div>
-      </div>
-
-      {/* Filtros */}
+      {/* Buscador */}
       <div className="bg-white p-4 rounded-lg border border-gray-200 mb-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Buscar factura..."
-                className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <select
-              value={filtro}
-              onChange={(e) => setFiltro(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="todas">Todas</option>
-              <option value="borrador">Borrador</option>
-              <option value="emitida">Emitida</option>
-              <option value="pagada">Pagada</option>
-              <option value="anulada">Anulada</option>
-            </select>
-          </div>
-          <button className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">
-            <Download className="h-4 w-4 mr-2" />
-            Exportar
-          </button>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            type="text"
+            placeholder="Buscar por número o cliente…"
+            className="pl-10 pr-4 py-2 border rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
         </div>
       </div>
 
-      {/* Tabla de facturas */}
-      <div className="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
-        {facturasFiltradas.length === 0 ? (
-          <div className="text-center py-12">
-            <FileText className="mx-auto h-12 w-12 text-gray-400" />
-            <h3 className="mt-2 text-sm font-medium text-gray-900">No hay facturas</h3>
-            <p className="mt-1 text-sm text-gray-500">Comienza creando tu primera factura.</p>
-            <div className="mt-6">
-              <button className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700">
-                <Plus className="h-5 w-5 mr-2" />
-                Crear Factura
-              </button>
-            </div>
-          </div>
-        ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+      {/* Tabla */}
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr className="text-left">
+              <th className="px-4 py-3">#</th>
+              <th className="px-4 py-3">Cliente</th>
+              <th className="px-4 py-3">Fecha</th>
+              <th className="px-4 py-3">Total</th>
+              <th className="px-4 py-3">Estado</th>
+              <th className="px-4 py-3 w-40">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  # Factura
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Cliente
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Fecha
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Total
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Estado
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Acciones
-                </th>
+                <td className="p-6 text-center text-gray-500" colSpan={6}>
+                  No hay facturas. ¡Crea la primera!
+                </td>
               </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {facturasFiltradas.map((factura) => (
-                <tr key={factura.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    #{factura.id.toString().padStart(4, '0')}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    <div className="flex items-center">
-                      <User className="h-4 w-4 mr-2 text-gray-400" />
-                      {factura.cliente_nombre || 'Cliente'}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    <div className="flex items-center">
-                      <Calendar className="h-4 w-4 mr-2 text-gray-400" />
-                      {new Date(factura.fecha_emision).toLocaleDateString('es-CO')}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    ${parseFloat(factura.total || 0).toLocaleString('es-CO')}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {getEstadoBadge(factura.estado)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <button className="text-indigo-600 hover:text-indigo-900 mr-3">
-                      Ver
-                    </button>
-                    <button className="text-blue-600 hover:text-blue-900 mr-3">
-                      Editar
-                    </button>
-                    <button className="text-green-600 hover:text-green-900">
-                      PDF
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+            ) : (
+              filtered.map((f) => {
+                const canDelete = (f.estado || "borrador") === "borrador";
+                return (
+                  <tr key={f.id} className="border-t hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium">#{String(f.numero).padStart(4, "0")}</td>
+                    <td className="px-4 py-3">{f.tercero_nombre ?? ""}</td>
+                    <td className="px-4 py-3">{fmtDate(f.fecha)}</td>
+                    <td className="px-4 py-3 font-medium">{fmtMoney(f.total)}</td>
+                    <td className="px-4 py-3"><EstadoBadge estado={f.estado} /></td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2">
+                        <button
+                          className="inline-flex items-center px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700"
+                          onClick={() => onEdit(f)}
+                        >
+                          <Edit2 className="h-4 w-4 mr-1" /> Editar
+                        </button>
+                        <button
+                          className={`inline-flex items-center px-2 py-1 rounded ${canDelete ? "bg-red-600 hover:bg-red-700 text-white" : "bg-gray-200 text-gray-500 cursor-not-allowed"}`}
+                          onClick={() => canDelete && onAskDelete(f)}
+                          disabled={!canDelete}
+                          title={!canDelete ? "Solo se pueden eliminar facturas en estado 'borrador'" : "Eliminar"}
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" /> Eliminar
+                        </button>
+                        <button
+                          className="inline-flex items-center px-2 py-1 rounded border-0
+                                      bg-[#fbcfe8] text-[#3b0764] hover:bg-[#e5bdfb]"
+                          onClick={() => setOpenPdf({ id: f.id, numero: f.numero })}
+                          title="Ver PDF"
+                        >
+                          Ver PDF
+                        </button>
+
+
+
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
+
+      {/* Modal editar/crear */}
+      <Modal
+        open={openForm}
+        onClose={() => setOpenForm(false)}
+        title={editing ? "Editar Factura" : "Nueva Factura"}
+        footer={null}
+      >
+        <InvoiceForm
+          initial={editing}
+          onSubmit={onSubmit}
+          submitting={createM.isPending || updateM.isPending}
+          onCancel={() => setOpenForm(false)}
+        />
+      </Modal>
+
+      {/* Confirmación de borrado */}
+      <Modal
+        open={!!confirmDel}
+        onClose={() => setConfirmDel(null)}
+        title="Eliminar Factura"
+        footer={
+          <div className="flex justify-end gap-2">
+            <button className="px-3 py-2 rounded border" onClick={() => setConfirmDel(null)}>Cancelar</button>
+            <button className="px-3 py-2 rounded bg-red-600 text-white" onClick={onConfirmDelete}>
+              Eliminar
+            </button>
+          </div>
+        }
+      >
+        <p className="text-sm text-gray-700">
+          ¿Está seguro que desea eliminar la factura <b>#{String(confirmDel?.numero ?? confirmDel?.id ?? "").padStart(4, "0")}</b>?
+          Esta acción no se puede deshacer.
+        </p>
+      </Modal>
+
+      <Modal
+          open={!!openPdf}
+          onClose={() => setOpenPdf(null)}
+          title={`Factura #${String(openPdf?.numero ?? openPdf?.id ?? "").padStart(4, "0")}`}
+          footer={
+            <div className="flex justify-end gap-2">
+              <a
+                className="px-3 py-2 rounded bg-indigo-600 text-white"
+                href={`${BASE}/api/facturacion/facturas/${openPdf?.id}/pdf/?download=1`}
+                target="_blank" rel="noreferrer"
+              >
+                Descargar
+              </a>
+              <button className="px-3 py-2 rounded border" onClick={() => setOpenPdf(null)}>Cerrar</button>
+            </div>
+          }
+         >
+          <div className="h-[80vh]">
+            <iframe
+              title="Factura PDF"
+              src={`${BASE}/api/facturacion/facturas/${openPdf?.id}/pdf/`}
+              className="w-full h-full rounded"
+            />
+          </div>
+       </Modal>
+
+
+
+
+
+
+
     </div>
   );
-};
-
-export default Facturacion;
+}

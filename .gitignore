@@ -3,7 +3,6 @@
 *.pyc
 *.pyo
 *.pyd
-.Python
 env/
 venv/
 backend/.venv/
