@@ -1,3 +1,4 @@
+# backend/facturacion/serializers.py
 from rest_framework import serializers
 from django.db import transaction
 from decimal import Decimal
@@ -24,24 +25,67 @@ class FacturaSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'subtotal', 'impuestos', 'total', 'cufe', 'qr_code', 'cliente_nombre']
 
+    # ----- CREAR (ya lo tenías) -----
+    @transaction.atomic
     def create(self, validated_data):
         items_data = validated_data.pop('items')
+        factura = Factura.objects.create(**validated_data)
 
-        with transaction.atomic():
-            factura = Factura.objects.create(**validated_data)
+        subtotal_factura = Decimal('0.00')
+        impuestos_factura = Decimal('0.00')
+
+        for item_data in items_data:
+            item = ItemFactura.objects.create(factura=factura, **item_data)  # usa save() -> calcula subtotal_linea
+            subtotal_factura += item.subtotal_linea
+            if item.lleva_iva:
+                impuestos_factura += item.subtotal_linea * IVA_RATE
+
+        factura.subtotal = subtotal_factura
+        factura.impuestos = impuestos_factura.quantize(Decimal('0.01'))
+        factura.total = subtotal_factura + impuestos_factura
+        factura.save()
+
+        return factura
+
+    # ----- EDITAR (nuevo) -----
+    @transaction.atomic
+    def update(self, instance: Factura, validated_data):
+        """
+        Edita encabezado y, si 'items' viene en el payload, reemplaza TODOS los ítems.
+        Si haces PATCH y no envías 'items', los ítems se mantienen igual.
+        """
+        items_data = validated_data.pop('items', None)
+
+        # actualizar campos del encabezado
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if items_data is not None:
+            # Reemplazo simple: borro y creo (suficiente para ahora)
+            instance.items.all().delete()
+
             subtotal_factura = Decimal('0.00')
             impuestos_factura = Decimal('0.00')
 
             for item_data in items_data:
-                item = ItemFactura.objects.create(factura=factura, **item_data)
+                item = ItemFactura.objects.create(factura=instance, **item_data)
                 subtotal_factura += item.subtotal_linea
                 if item.lleva_iva:
                     impuestos_factura += item.subtotal_linea * IVA_RATE
 
-            # Actualizar los totales de la factura
-            factura.subtotal = subtotal_factura
-            factura.impuestos = impuestos_factura.quantize(Decimal('0.01'))
-            factura.total = subtotal_factura + impuestos_factura
-            factura.save()
+            instance.subtotal = subtotal_factura
+            instance.impuestos = impuestos_factura.quantize(Decimal('0.01'))
+            instance.total = subtotal_factura + impuestos_factura
+            instance.save()
 
-        return factura
+        return instance
+
+    # (Opcional) Si quieres evitar que una factura NO borrador sea editada:
+    def validate(self, attrs):
+        # Solo aplica cuando ya existe (update)
+        if self.instance and self.instance.estado != 'borrador':
+            # permite cambiar estado a 'emitida/pagada/anulada', pero bloquea edición de contenido si envían items
+            if 'items' in self.initial_data:
+                raise serializers.ValidationError("No puedes modificar los ítems si la factura no está en 'borrador'.")
+        return attrs
