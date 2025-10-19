@@ -1,7 +1,14 @@
 from rest_framework import viewsets, filters, views
 from rest_framework.response import Response
+#from rest_framework.permissions import AllowAny   # 👈 añade esto
 from .models import Cuenta, AsientoContable, MovimientoContable
 from .serializers import CuentaSerializer, AsientoContableSerializer, MovimientoContableSerializer
+from django.utils import timezone
+from datetime import date
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+
 
 class CuentaViewSet(viewsets.ReadOnlyModelViewSet):
     """
@@ -10,10 +17,11 @@ class CuentaViewSet(viewsets.ReadOnlyModelViewSet):
     Proporciona las acciones `list` y `retrieve` (solo lectura).
     Permite filtrar por el nombre de la cuenta.
     """
-    queryset = Cuenta.objects.all()
+    
+    queryset = Cuenta.objects.all().order_by("codigo")
     serializer_class = CuentaSerializer
     filter_backends = [filters.SearchFilter]
-    search_fields = ['codigo', 'nombre']
+    search_fields = ["codigo", "nombre"]
 
 class AsientoContableViewSet(viewsets.ModelViewSet):
     """
@@ -23,9 +31,72 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
     La actualización y eliminación se deshabilitan por seguridad contable,
     ya que los asientos no deben modificarse (se deben crear asientos de ajuste).
     """
-    queryset = AsientoContable.objects.prefetch_related('movimientos').all()
+    permission_classes = [IsAuthenticated]
+    
+    queryset = AsientoContable.objects.prefetch_related("movimientos").all()
     serializer_class = AsientoContableSerializer
     http_method_names = ['get', 'post', 'head', 'options'] # Deshabilitar PUT, PATCH, DELETE
+
+    @action(detail=True, methods=["post"], url_path="anular")
+    def anular(self, request, pk=None):
+        """
+        Reglas:
+        - Hasta 31/12 del mismo año del asiento: anula sin PIN.
+        - 01/01 a 31/03 del siguiente año: requiere contador_pin y gerente_pin correctos.
+        - Después de 31/03: prohibido.
+        Crea asiento de ajuste (movimientos invertidos) y marca el original como 'anulado'.
+        """
+        asiento = self.get_object()
+        if asiento.estado == "anulado":
+            return Response({"detail": "El asiento ya está anulado."}, status=400)
+
+        hoy = timezone.localdate()
+        y = asiento.fecha.year
+        limite_libre = date(y, 12, 31)
+        limite_pin = date(y+1, 3, 31)
+
+        contador_pin = request.data.get("contador_pin")
+        gerente_pin = request.data.get("gerente_pin")
+        motivo = request.data.get("motivo","")
+
+        # Ventanas de tiempo
+        if hoy <= limite_libre:
+            pass  # permitido sin PIN
+        elif hoy <= limite_pin:
+            # requiere ambos PIN
+            from django.conf import settings
+            ok_cont = bool(contador_pin) and (contador_pin == getattr(settings, "CONTADOR_PIN", None))
+            ok_ger = bool(gerente_pin) and (gerente_pin == getattr(settings, "GERENTE_PIN", None))
+            if not (ok_cont and ok_ger):
+                return Response({"detail":"Se requieren PIN válidos de Contador y Gerente (ventana enero-marzo)."}, status=403)
+        else:
+            return Response({"detail":"Anulación prohibida después del 31 de marzo."}, status=403)
+
+        # Crear asiento de ajuste (inverso)
+        ajuste = AsientoContable.objects.create(
+            fecha = hoy,
+            concepto = f"AJUSTE POR ANULACIÓN del asiento #{asiento.id}",
+            tercero = asiento.tercero,
+            descripcion_adicional = f"Motivo: {motivo}",
+        )
+        # invierte movimientos
+        for m in asiento.movimientos.all():
+            MovimientoContable.objects.create(
+                asiento = ajuste,
+                cuenta = m.cuenta,
+                debito = m.credito,
+                credito = m.debito,
+            )
+
+        # Marcar original como anulado + auditoría
+        asiento.estado = "anulado"
+        asiento.anulado_por = request.user
+        asiento.anulado_en = timezone.now()
+        asiento.anulacion_motivo = motivo
+        asiento.ajusta_a = ajuste
+        asiento.save()
+
+        return Response({"detail":"Asiento anulado y ajuste generado", "ajuste_id": ajuste.id}, status=200)
 
     def get_queryset(self):
         """
@@ -47,6 +118,8 @@ class LibroDiarioView(views.APIView):
     Vista para generar el reporte de Libro Diario.
     Devuelve todos los movimientos contables ordenados por fecha.
     """
+    
+
     def get(self, request):
         fecha_inicio = request.query_params.get('fecha_inicio')
         fecha_fin = request.query_params.get('fecha_fin')
@@ -79,6 +152,8 @@ class BalancePruebasView(views.APIView):
     Vista para generar el reporte de Balance de Pruebas.
     Agrupa los movimientos por cuenta y calcula los saldos débito y crédito.
     """
+    
+
     def get(self, request):
         from django.db.models import Sum
 
@@ -142,6 +217,8 @@ class LibroMayorView(views.APIView):
     """
     Vista para generar el reporte de Libro Mayor para una cuenta específica.
     """
+    
+
     def get(self, request, codigo_cuenta):
         from django.db.models import Sum, Q
         from decimal import Decimal
@@ -209,6 +286,8 @@ class EstadoResultadosView(views.APIView):
     """
     Vista para generar el Estado de Resultados a una fecha de corte.
     """
+    
+
     def get(self, request):
         from django.db.models import Sum
         from decimal import Decimal
@@ -259,6 +338,8 @@ class BalanceGeneralView(views.APIView):
     """
     Vista para generar el Balance General (Estado de Situación Financiera).
     """
+    
+
     def get(self, request):
         from django.db.models import Sum
         from decimal import Decimal
@@ -315,6 +396,8 @@ class MediosMagneticosView(views.APIView):
     """
     Vista para generar reportes de Medios Magnéticos (Exógena) para la DIAN.
     """
+    
+
     def get(self, request, formato):
         year = request.query_params.get('year')
         if not year:

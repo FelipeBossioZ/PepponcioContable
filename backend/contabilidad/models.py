@@ -11,6 +11,7 @@ class Cuenta(models.Model):
     # El campo 'padre' permite crear la estructura jerárquica del PUC
     padre = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='hijos')
 
+
     def __str__(self):
         return f"{self.codigo} - {self.nombre}"
 
@@ -28,9 +29,22 @@ class AsientoContable(models.Model):
     tercero = models.ForeignKey(Tercero, on_delete=models.PROTECT, verbose_name="Tercero Involucrado")
     concepto = models.CharField(max_length=500, verbose_name="Concepto")
     descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción Adicional")
-
+    descripcion_adicional = models.TextField(blank=True, null=True)
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
+    # backend/contabilidad/models.py (AsientoContable)
+    estado = models.CharField(max_length=10, default="vigente", choices=[("vigente","Vigente"),("anulado","Anulado")])
+    anulado_por = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    anulado_en = models.DateTimeField(null=True, blank=True)
+    anulacion_motivo = models.TextField(blank=True, null=True)
+    ajusta_a = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="ajustes")  # asiento de ajuste que anuló este
+
+    
+
+
+
+
+
 
     def clean(self):
         # Este método se llamará antes de guardar para validar la lógica del modelo

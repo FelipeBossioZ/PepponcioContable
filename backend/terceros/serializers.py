@@ -6,6 +6,9 @@ class TerceroSerializer(serializers.ModelSerializer):
     Serializer para el modelo Tercero.
     Permite la serialización y deserialización de los datos de Terceros.
     """
+    nombre = serializers.CharField(source="nombre_razon_social", read_only=True)  # 👈 alias estable
+
+
     class Meta:
         model = Tercero
         fields = [
@@ -13,6 +16,7 @@ class TerceroSerializer(serializers.ModelSerializer):
             'tipo_documento',
             'numero_documento',
             'nombre_razon_social',
+            'nombre',
             'direccion',
             'telefono',
             'email',

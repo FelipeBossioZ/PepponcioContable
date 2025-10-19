@@ -114,3 +114,8 @@ export const getEstadoResultados = (params = {}) =>
 // Balance General (requiere ?fecha_fin=YYYY-MM-DD)
 export const getBalanceGeneral = (params = {}) =>
   api.get("/api/contabilidad/balance-general/", { params }).then(r => r.data);
+
+// Anular asiento (con motivo + PINs opcionales enero–marzo)
+export const annulAsiento = ({ id, motivo, contador_pin, gerente_pin }) =>
+  api.post(`/api/contabilidad/asientos/${id}/anular/`, { motivo, contador_pin, gerente_pin }).then(r => r.data);
+
