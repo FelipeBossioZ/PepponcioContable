@@ -1,8 +1,7 @@
-from django.contrib import admin
-
 # backend/contabilidad/admin.py
 from django.contrib import admin
 from .models import Cuenta, AsientoContable, MovimientoContable
+from .models import PeriodoContable
 
 class MovimientoContableInline(admin.TabularInline):
     """
@@ -59,3 +58,8 @@ class MovimientoContableAdmin(admin.ModelAdmin):
     list_display = ['asiento', 'cuenta', 'debito', 'credito']
     list_filter = ['asiento__fecha', 'cuenta']
     search_fields = ['asiento__concepto', 'cuenta__nombre']
+
+@admin.register(PeriodoContable)
+class PeriodoAdmin(admin.ModelAdmin):
+  list_display = ("anio","estado","ventana_enero_marzo","cerrado_por","cerrado_en")
+  list_editable = ("estado","ventana_enero_marzo",)    

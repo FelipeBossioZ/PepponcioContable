@@ -1,27 +1,18 @@
+// frontend/src/hooks/useAsientos.js
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getAsientos, createAsiento } from "../services/api";
-//import { api } from "../services/api";
 import { annulAsiento } from "../services/api";
 
-
 const key = (filters) => ["asientos", filters];
-
-const normalize = (data) => {
-  const arr = Array.isArray(data) ? data : (data?.results ?? []);
-  return arr.map(a => ({
-    id: a.id,
-    fecha: a.fecha,
-    concepto: a.concepto ?? "",
-    tercero_nombre: a.tercero?.nombre_razon_social ?? a.tercero_nombre ?? "",
-    movimientos: a.movimientos ?? [], // depende de tu serializer
-  }));
-};
 
 export function useAsientos(filters = {}) {
   return useQuery({
     queryKey: key(filters),
     queryFn: () => getAsientos(filters),
-    select: normalize,
+    select: (data) => ({
+      items: data?.results ?? data ?? [],
+      count: data?.count ?? (Array.isArray(data) ? data.length : 0),
+    }),
     staleTime: 60_000,
   });
 }

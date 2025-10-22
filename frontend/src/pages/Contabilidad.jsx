@@ -22,100 +22,204 @@ function Modal({ open, onClose, title, children, footer }) {
   );
 }
 
-// helpers de fecha (YYYY-MM-DD)
-function todayISO() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
-}
-function monthBoundsISO(d = new Date()) {
-  const first = new Date(d.getFullYear(), d.getMonth(), 1);
-  const last  = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  const fmt = (x) => x.toISOString().slice(0, 10);
-  return { min: fmt(first), max: fmt(last) };
+
+// helpers de fecha (PUEDEN ir fuera)
+function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
+function monthBoundsISO(d=new Date()){ const f=new Date(d.getFullYear(),d.getMonth(),1);
+  const l=new Date(d.getFullYear(),d.getMonth()+1,0); const fmt=x=>x.toISOString().slice(0,10);
+  return {min:fmt(f), max:fmt(l)}; }
+
+
+function parseYMD(ymd) {
+  if (!ymd) return null;
+  const [y,m,d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return { y, m, d };
 }
 
-// alerta de naturaleza (no bloqueante)
-function naturalezaEsperada(codigo) {
-  if (!codigo) return null;
-  const s = String(codigo);
-  if (s.startsWith("4")) {
-    if (s.startsWith("4175") || s.startsWith("4195")) return null; // excepciones
-    return "C"; // crédito esperado
-  }
-  if (s.startsWith("5")) {
-    if (s.startsWith("5905")) return null; // excepción
-    return "D"; // débito esperado
-  }
-  return null;
+function firstDayOfMonth(ymd){
+  const parts = parseYMD(ymd);
+  if (!parts) return ymd; // fallback
+  const { y, m } = parts;
+  return new Date(y, m-1, 1).toISOString().slice(0,10);
+}
+function lastDayOfMonth(ymd){
+  const parts = parseYMD(ymd);
+  if (!parts) return ymd; // fallback
+  const { y, m } = parts;
+  return new Date(y, m, 0).toISOString().slice(0,10);
 }
 
-const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString("es-CO") : "");
-const fmtMoney = (n) =>
-  new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 2 }).format(n ?? 0);
+
+
+function naturalezaEsperada(codigo){ if(!codigo) return null; const s=String(codigo);
+  if(s.startsWith("4")){ if(s.startsWith("4175")||s.startsWith("4195")) return null; return "C"; }
+  if(s.startsWith("5")){ if(s.startsWith("5905")) return null; return "D"; }
+  return null; }
+const fmtDate = iso => iso ? new Date(iso).toLocaleDateString("es-CO") : "";
+const fmtMoney = n => new Intl.NumberFormat("es-CO",{style:"currency",currency:"COP",maximumFractionDigits:2}).format(n ?? 0);
+
+
+
 
 export default function Contabilidad() {
-  // filtros
-  const [search, setSearch] = useState("");
-  const [fechaInicio, setFechaInicio] = useState("");
-  const [fechaFin, setFechaFin] = useState("");
-  const [rowErrors, setRowErrors] = useState({}); // { [index]: { code?: string } }
-  const emptyRow = { cuenta: "", debito: 0, credito: 0 };
+  // ---- filtros y paginación ----
+const [search, setSearch] = useState("");
+const [fechaInicio, setFechaInicio] = useState("");
+const [fechaFin, setFechaFin] = useState("");
+const [gravYear, setGravYear] = useState(new Date().getFullYear());
+const years = useMemo(() => Array.from({length:6},(_,i)=> new Date().getFullYear()-i), []);
+const [page, setPage] = useState(1);
 
-  function openNewAsiento() {
-    // estado inicial “listo para tipear”
+
+
+// ---- errores por fila y form ----
+const [rowErrors, setRowErrors] = useState({});
+const [openForm, setOpenForm] = useState(false);
+const [serverError, setServerError] = useState(null);
+const emptyRow = { cuenta:"", debito:0, credito:0 };
+const [form, setForm] = useState({ fecha: todayISO(), concepto:"", tercero_id:"", descripcion_adicional:"" });
+const [movRows, setMovRows] = useState([{...emptyRow},{...emptyRow}]);
+
+// ---- modales varios ----
+const [openDet, setOpenDet] = useState(null);
+const [openAnular, setOpenAnular] = useState(null);
+const [pins, setPins] = useState({ motivo:"", contador_pin:"", gerente_pin:"" });
+const [openTercero, setOpenTercero] = useState(false);
+const [nuevoTer, setNuevoTer] = useState({ tipo_documento:"CC", numero_documento:"", nombre_razon_social:"", direccion:"", telefono:"", email:"" });
+
+// ---- datos (React Query) ----
+const { data: cuentas = [], isLoading: lCuentas, isError: eCuentas, error: errCuentas } = useCuentas({ search });
+const cuentaCodes = useMemo(()=> new Set(cuentas.map(c => String(c.codigo))) ,[cuentas]);
+const { data: asientosData = {}, isLoading: lAsientos, isError: eAsientos, error: errAsientos } =
+  useAsientos({ fecha_inicio: fechaInicio || undefined, fecha_fin: fechaFin || undefined, page });
+
+const asientos = asientosData.items ?? asientosData ?? []; // soporta ambas formas
+const total    = asientosData.count ?? (Array.isArray(asientosData) ? asientosData.length : 0);
+const pageSize = 15;
+const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+// mutaciones
+const create  = useCreateAsiento({ fecha_inicio: fechaInicio || undefined, fecha_fin: fechaFin || undefined });
+const anularM = useAnularAsiento({});
+const { data: terceros = [] } = useTerceros({});
+const createTer = useCreateTercero({});
+
+// ---- mensaje dinámico del periodo (depende de form.fecha) ----
+const textoPeriodo = useMemo(() => {
+  const fechaSel = new Date(form.fecha || todayISO());
+  const y = fechaSel.getFullYear();
+  const today = new Date();
+  const inJanMar = today.getFullYear() === y + 1 && today.getMonth() <= 2; // 0..2=ene..mar
+  return inJanMar
+    ? `Periodo: ${y} — Ventana enero–marzo activa (requiere PINs).`
+    : `Periodo: ${y} — Anulación según estado del periodo.`;
+}, [form.fecha]);
+
+// ====== HANDLERS dentro del componente ======
+const onChangeIni = (e) => { const v=e.target.value; setFechaInicio(v); if(!fechaFin && v) setFechaFin(lastDayOfMonth(v)); setPage(1); };
+const onChangeFin = (e) => { const v=e.target.value; setFechaFin(v);   if(!fechaInicio && v) setFechaInicio(firstDayOfMonth(v)); setPage(1); };
+const addRow = () => setMovRows((rows) => [...rows, { cuenta: "", debito: 0, credito: 0 }]);
+
+function setYearRange(y){ setGravYear(y); setFechaInicio(`${y}-01-01`); setFechaFin(`${y}-12-31`); setPage(1); }
+
+function openNewAsiento() {
+  // estado inicial “listo para tipear”
+  setServerError(null);
+  setRowErrors({});
+  setForm({ fecha: todayISO(), concepto: "", tercero_id: "", descripcion_adicional: "" });
+  setMovRows([ { ...emptyRow }, { ...emptyRow } ]);      // 👈 dos filas
+  setOpenForm(true);
+    
+}
+
+useEffect(() => {
+  if (!openForm) {
+    setForm({ fecha: todayISO(), concepto: "", tercero_id: "", descripcion_adicional: "" });
+    setMovRows([ { ...emptyRow }, { ...emptyRow } ]);  // 👈 dos filas por defecto
     setServerError(null);
     setRowErrors({});
-    setForm({ fecha: todayISO(), concepto: "", tercero_id: "", descripcion_adicional: "" });
-    setMovRows([ { ...emptyRow }, { ...emptyRow } ]);      // 👈 dos filas
-    setOpenForm(true);
   }
+}, [openForm]);
 
 
+const changeHdr = (k)=> (e)=> { setServerError(null); setForm(s=>({ ...s, [k]: e.target.value })); };
+const changeRow = (i,k)=> (e)=> {
+  const v = e.target.value; setServerError(null);
+  setMovRows(rows => rows.map((r,idx)=> idx===i ? { ...r, [k]: v } : r ));
+  if(k==="cuenta"){
+    setRowErrors(prev=>{
+      const next = {...prev};
+      if(!v) next[i] = { ...(next[i]||{}), code:"Ingrese un código de cuenta." };
+      else if(!cuentaCodes.has(String(v))) next[i] = { ...(next[i]||{}), code:`La cuenta '${v}' no existe.` };
+      else { if(next[i]){ const {code,...rest}=next[i]; next[i]=rest; if(!Object.keys(next[i]).length) delete next[i]; } }
+      return next;
+    });
+  }
+};
 
-  // datos (React Query)
-  const { data: cuentas = [], isLoading: lCuentas, isError: eCuentas, error: errCuentas } =
-    useCuentas({ search });
+const matchCuentas = (q) => {
+  const s = (q || "").toString().toLowerCase();
+  return cuentas.filter(
+    (c) => c.codigo?.toLowerCase().includes(s) || c.nombre?.toLowerCase().includes(s)
+  );
+};
 
-  const cuentaCodes = useMemo(
-  () => new Set(cuentas.map(c => String(c.codigo))),
-  [cuentas]
-);
-  
-  const { data: asientos = [], isLoading: lAsientos, isError: eAsientos, error: errAsientos } =
-    useAsientos({ fecha_inicio: fechaInicio || undefined, fecha_fin: fechaFin || undefined });
 
-    
+const delRow = (i)=>{ setMovRows(rows=>{ if(rows.length<=2) return rows; return rows.filter((_r,idx)=> idx!==i); });
+  setRowErrors(prev=>{ if(!prev[i]) return prev; const next={...prev}; delete next[i]; return next; }); };
 
-  // crear asiento (invalidará lista al éxito)
-  const create = useCreateAsiento({ fecha_inicio: fechaInicio || undefined, fecha_fin: fechaFin || undefined });
+const BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const onExport = ()=> {
+  const p = new URLSearchParams();
+  if(fechaInicio) p.append("fecha_inicio", fechaInicio);
+  if(fechaFin)    p.append("fecha_fin", fechaFin);
+  p.append("formato","xlsx");
+  window.open(`${BASE}/api/contabilidad/reportes/balance-pruebas/?${p.toString()}`,"_blank");
+};
+ 
+  // totales + validación
+const totalDeb = useMemo(()=> movRows.reduce((s,r)=> s + (Number(r.debito)||0), 0), [movRows]);
+const totalCred= useMemo(()=> movRows.reduce((s,r)=> s + (Number(r.credito)||0), 0), [movRows]);
+const balanceOk = Math.abs(totalDeb - totalCred) < 1e-6;
 
-  // --- Detalle / Anular ---
-  const [openDet, setOpenDet] = useState(null);
-  const [openAnular, setOpenAnular] = useState(null);
-  const [pins, setPins] = useState({ motivo: "", contador_pin: "", gerente_pin: "" });
-  const anularM = useAnularAsiento({});
+// payload por CÓDIGO
+const buildPayloadByCuentaCodigo = () => ({
+  fecha: form.fecha,
+  concepto: form.concepto,
+  tercero: form.tercero_id ? Number(form.tercero_id) : null,
+  descripcion_adicional: form.descripcion_adicional || "",
+  movimientos: movRows.map((r) => ({
+    cuenta_codigo: r.cuenta,
+    debito: Number(r.debito) || 0,
+    credito: Number(r.credito) || 0,
+  })),
+});  
 
-  // --- Quick-create de tercero ---
-  const { data: terceros = [] } = useTerceros({});
-  const createTer = useCreateTercero({});
-  const [openTercero, setOpenTercero] = useState(false);
-  const [nuevoTer, setNuevoTer] = useState({
-    tipo_documento: "CC",
-    numero_documento: "",
-    nombre_razon_social: "",
-    direccion: "",
-    telefono: "",
-    email: "",
+const onSubmitAsiento = (e) => {
+  e.preventDefault();
+  if (!balanceOk) {
+    alert("El asiento no cuadra: Débitos y Créditos deben ser iguales.");
+    return;
+  }
+  // ¿hay errores locales de código?
+  if (Object.keys(rowErrors).length > 0) {
+  const firstIdx = Math.min(...Object.keys(rowErrors).map(Number));
+  const el = document.querySelector(`input[list="cuentas-sug-${firstIdx}"]`);
+  if (el) el.focus();
+  return;
+}
+  const payload = buildPayloadByCuentaCodigo();
+  create.mutate(payload, {
+    onSuccess: () => { setOpenForm(false); setServerError(null); },
+    onError: (err) => setServerError(parseApiError(err)),
   });
+};
 
-  // form asiento
-  const [openForm, setOpenForm] = useState(false);
-  const [form, setForm] = useState({ fecha: todayISO(), concepto: "", tercero_id: "", descripcion_adicional: "" });
-  const [movRows, setMovRows] = useState([{ cuenta: "", debito: 0, credito: 0 }]);
 
-  // Mostrar errores del backend
-  const [serverError, setServerError] = useState(null);
-  function parseApiError(err) {
+ // Mostrar errores del backend
+  
+function parseApiError(err) {
   const data = err?.response?.data;
   if (!data) return "Error desconocido.";
 
@@ -136,112 +240,6 @@ export default function Contabilidad() {
   return lines.join("\n");
 }
 
-
-  useEffect(() => {
-  if (!openForm) {
-    setForm({ fecha: todayISO(), concepto: "", tercero_id: "", descripcion_adicional: "" });
-    setMovRows([ { ...emptyRow }, { ...emptyRow } ]);  // 👈 dos filas por defecto
-    setServerError(null);
-    setRowErrors({});
-  }
-}, [openForm]);
-
-
-  const changeHdr = (k) => (e) => {
-  setServerError(null);                  // limpia el bloque rojo grande al tipear
-  setForm((s) => ({ ...s, [k]: e.target.value }));
-};
-
-  const changeRow = (i, k) => (e) => {
-  const v = e.target.value;
-  setServerError(null); 
-  setMovRows((rows) => rows.map((r, idx) => (idx === i ? { ...r, [k]: v } : r)));
-
-  if (k === "cuenta") {
-    setRowErrors(prev => {
-      const next = { ...prev };
-      if (!v) {
-        next[i] = { ...(next[i] || {}), code: "Ingrese un código de cuenta." };
-      } else if (!cuentaCodes.has(String(v))) {
-        next[i] = { ...(next[i] || {}), code: `La cuenta '${v}' no existe.` };
-      } else {
-        // código válido: elimina el error de esa fila
-        if (next[i]) {
-          const { code, ...rest } = next[i];
-          next[i] = rest;
-          if (!Object.keys(next[i]).length) delete next[i];
-        }
-      }
-      return next;
-    });
-  }
-};
-  const addRow = () => setMovRows((rows) => [...rows, { cuenta: "", debito: 0, credito: 0 }]);
-  const delRow = (i) => {
-  setMovRows((rows) => {
-    if (rows.length <= 2) return rows; // 👈 mínimo 2 filas
-    const next = rows.filter((_r, idx) => idx !== i);
-    return next;
-  });
-  setRowErrors((prev) => {
-    if (!prev[i]) return prev;
-    const next = { ...prev };
-    delete next[i];
-    return next;
-  });
-};
-
-  // sugerencias de cuenta por código/nombre
-  const matchCuentas = (q) => {
-    const s = (q || "").toString().toLowerCase();
-    return cuentas.filter(
-      (c) => c.codigo?.toLowerCase().includes(s) || c.nombre?.toLowerCase().includes(s)
-    );
-  };
-
-  // totales + validación
-  const totalDeb = useMemo(
-    () => movRows.reduce((s, r) => s + (Number(r.debito) || 0), 0),
-    [movRows]
-  );
-  const totalCred = useMemo(
-    () => movRows.reduce((s, r) => s + (Number(r.credito) || 0), 0),
-    [movRows]
-  );
-  const balanceOk = Math.abs(totalDeb - totalCred) < 1e-6;
-
-  // payload por CÓDIGO
-  const buildPayloadByCuentaCodigo = () => ({
-    fecha: form.fecha,
-    concepto: form.concepto,
-    tercero: form.tercero_id ? Number(form.tercero_id) : null,
-    descripcion_adicional: form.descripcion_adicional || "",
-    movimientos: movRows.map((r) => ({
-      cuenta_codigo: r.cuenta,
-      debito: Number(r.debito) || 0,
-      credito: Number(r.credito) || 0,
-    })),
-  });
-
-  const onSubmitAsiento = (e) => {
-  e.preventDefault();
-  if (!balanceOk) {
-    alert("El asiento no cuadra: Débitos y Créditos deben ser iguales.");
-    return;
-  }
-  // ¿hay errores locales de código?
-  if (Object.keys(rowErrors).length > 0) {
-  const firstIdx = Math.min(...Object.keys(rowErrors).map(Number));
-  const el = document.querySelector(`input[list="cuentas-sug-${firstIdx}"]`);
-  if (el) el.focus();
-  return;
-}
-  const payload = buildPayloadByCuentaCodigo();
-  create.mutate(payload, {
-    onSuccess: () => { setOpenForm(false); setServerError(null); },
-    onError: (err) => setServerError(parseApiError(err)),
-  });
-};
 
 
   // loading / error global
@@ -296,6 +294,16 @@ export default function Contabilidad() {
       </div>
 
       {/* Filtros */}
+      <div className="bg-white p-4 rounded-lg border border-gray-200">
+        <label className="block text-sm mb-2">Año gravable</label>
+        <select
+          className="border rounded px-3 py-2 w-full"
+          value={gravYear}
+          onChange={(e)=> setYearRange(Number(e.target.value))}
+        >
+          {years.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         {/* Buscar cuentas */}
         <div className="bg-white p-4 rounded-lg border border-gray-200">
@@ -317,12 +325,16 @@ export default function Contabilidad() {
         <div className="bg-white p-4 rounded-lg border border-gray-200 lg:col-span-2">
           <label className="block text-sm mb-2">Rango de fechas (asientos)</label>
           <div className="flex gap-3">
-            <input type="date" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} className="border rounded px-3 py-2" />
-            <input type="date" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} className="border rounded px-3 py-2" />
+            <input type="date" value={fechaInicio} onChange={onChangeIni} className="border rounded px-3 py-2" />
+            <input type="date" value={fechaFin} onChange={onChangeFin} className="border rounded px-3 py-2" />
           </div>
-          <p className="text-xs text-gray-500 mt-2">{asientos.length} asientos</p>
+          <p className="text-xs text-gray-500 mt-2">{total} asientos</p>
         </div>
       </div>
+
+      <button onClick={onExport} className="px-3 py-2 border rounded hover:bg-gray-50">
+        Exportar Excel
+      </button>
 
       {/* Lista de Asientos */}
       <div className="bg-white shadow-sm rounded-lg border border-gray-200">
@@ -335,7 +347,7 @@ export default function Contabilidad() {
               <div className="mt-6">
                 <button
                   className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
-                  onClick={() => setOpenForm(true)}
+                  onClick={openNewAsiento}
                 >
                   <Plus className="h-5 w-5 mr-2" />
                   Crear Asiento
@@ -376,6 +388,21 @@ export default function Contabilidad() {
                   ))}
                 </tbody>
               </table>
+              {totalPages > 1 && (
+                <div className="flex items-center justify-end gap-2 mt-3">
+                  <button
+                    className="px-3 py-1 border rounded disabled:opacity-50"
+                    disabled={page<=1}
+                    onClick={()=> setPage(p => Math.max(1, p-1))}
+                  >Anterior</button>
+                  <span className="text-sm">Página {page} de {totalPages}</span>
+                  <button
+                    className="px-3 py-1 border rounded disabled:opacity-50"
+                    disabled={page>=totalPages}
+                    onClick={()=> setPage(p => Math.min(totalPages, p+1))}
+                  >Siguiente</button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -621,6 +648,7 @@ export default function Contabilidad() {
             </div>
           )}
 
+
           <div className="flex justify-end gap-2">
             <button type="button" className="px-3 py-2 rounded border" onClick={() => setOpenForm(false)}>
               Cancelar
@@ -633,6 +661,15 @@ export default function Contabilidad() {
               {create.isPending ? "Creando…" : "Crear asiento"}
             </button>
           </div>
+          
+          {/* RÓTULO DEL PERIODO (fila completa) */}
+          <div className="col-span-full w-full">
+            <p className="mt-2 w-full text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 rounded px-3 py-2">
+                {textoPeriodo}
+            </p>
+          </div>
+
+             
         </form>
       </Modal>
 
@@ -780,7 +817,7 @@ export default function Contabilidad() {
             </div>
             <div>
               <label className="block text-sm mb-1">PIN Gerente (enero–marzo)</label>
-              <input  cclassName="border rounded px-3 py-2 w-full"
+              <input  className="border rounded px-3 py-2 w-full"
                 value={pins.gerente_pin} onChange={(e)=>setPins(s=>({...s, gerente_pin:e.target.value}))}/>
             </div>
           </div>

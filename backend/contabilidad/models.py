@@ -1,6 +1,9 @@
+ #contabilidad/models.py
+
 from django.db import models
 from django.core.exceptions import ValidationError
 from terceros.models import Tercero
+from django.utils import timezone
 
 class Cuenta(models.Model):
     """
@@ -88,3 +91,39 @@ class MovimientoContable(models.Model):
         verbose_name = "Movimiento Contable"
         verbose_name_plural = "Movimientos Contables"
         ordering = ['asiento', 'id']
+
+# --- Periodo contable ---
+class PeriodoContable(models.Model):
+    """
+    Define el estado del periodo contable de un año.
+    - estado: abierto/cerrado
+    - ventana_enero_marzo: si True, permite anulación con PINs del 01/01 al 31/03 del año siguiente.
+    """
+    ANIO_ACTUAL = timezone.now().year  # referencia por defecto
+
+    anio = models.PositiveIntegerField(unique=True)
+    estado = models.CharField(max_length=10, choices=[("abierto","Abierto"),("cerrado","Cerrado")], default="abierto")
+    ventana_enero_marzo = models.BooleanField(default=True)
+
+    cerrado_por = models.ForeignKey("auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    cerrado_en = models.DateTimeField(null=True, blank=True)
+    notas = models.TextField(blank=True, null=True)
+
+    class Meta:
+        verbose_name = "Periodo Contable"
+        verbose_name_plural = "Periodos Contables"
+        ordering = ["-anio"]
+
+    def __str__(self):
+        return f"Periodo {self.anio} — {self.estado.capitalize()}"
+
+    @classmethod
+    def periodo_para_fecha(cls, fecha):
+        """devuelve (periodo, creado_si_no_existe) para el año de 'fecha'"""
+        obj, _ = cls.objects.get_or_create(anio=fecha.year, defaults={"estado": "abierto"})
+        return obj
+
+    @classmethod
+    def activo_para_hoy(cls):
+        today = timezone.localdate()
+        return cls.periodo_para_fecha(today)

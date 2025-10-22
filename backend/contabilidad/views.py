@@ -1,3 +1,5 @@
+#contabilidad/views.py
+
 from rest_framework import viewsets, filters, views
 from rest_framework.response import Response
 #from rest_framework.permissions import AllowAny   # 👈 añade esto
@@ -8,6 +10,25 @@ from datetime import date
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from .models import PeriodoContable
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font
+from django.http import HttpResponse
+from django.db.models import Sum
+from decimal import Decimal
+from datetime import datetime
+
+def _parse_date(val):
+    if not val:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):  # ISO y día/mes/año
+        try:
+            return datetime.strptime(val, fmt).date()
+        except ValueError:
+            continue
+    return None
+
 
 
 class CuentaViewSet(viewsets.ReadOnlyModelViewSet):
@@ -39,47 +60,50 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="anular")
     def anular(self, request, pk=None):
-        """
-        Reglas:
-        - Hasta 31/12 del mismo año del asiento: anula sin PIN.
-        - 01/01 a 31/03 del siguiente año: requiere contador_pin y gerente_pin correctos.
-        - Después de 31/03: prohibido.
-        Crea asiento de ajuste (movimientos invertidos) y marca el original como 'anulado'.
-        """
         asiento = self.get_object()
         if asiento.estado == "anulado":
             return Response({"detail": "El asiento ya está anulado."}, status=400)
 
         hoy = timezone.localdate()
-        y = asiento.fecha.year
-        limite_libre = date(y, 12, 31)
-        limite_pin = date(y+1, 3, 31)
+        periodo = PeriodoContable.periodo_para_fecha(asiento.fecha)  # periodo del año del asiento
 
-        contador_pin = request.data.get("contador_pin")
-        gerente_pin = request.data.get("gerente_pin")
-        motivo = request.data.get("motivo","")
+        # Reglas:
+        #  - Si el periodo del asiento está "cerrado": prohibido.
+        #  - Si está "abierto" y hoy <= 31/12 del mismo año: anula sin PIN.
+        #  - Si hoy es 01/01–31/03 del año siguiente y 'ventana_enero_marzo' = True: requiere PINs.
+        #  - Fuera de esas ventanas: prohibido.
+        if periodo.estado == "cerrado":
+            return Response({"detail": f"El periodo {periodo.anio} está CERRADO. Anulación prohibida."}, status=403)
 
-        # Ventanas de tiempo
+        limite_libre = date(asiento.fecha.year, 12, 31)
+        limite_pin   = date(asiento.fecha.year + 1, 3, 31)
+
+        requiere_pins = False
         if hoy <= limite_libre:
-            pass  # permitido sin PIN
-        elif hoy <= limite_pin:
-            # requiere ambos PIN
-            from django.conf import settings
-            ok_cont = bool(contador_pin) and (contador_pin == getattr(settings, "CONTADOR_PIN", None))
-            ok_ger = bool(gerente_pin) and (gerente_pin == getattr(settings, "GERENTE_PIN", None))
-            if not (ok_cont and ok_ger):
-                return Response({"detail":"Se requieren PIN válidos de Contador y Gerente (ventana enero-marzo)."}, status=403)
+            requiere_pins = False
+        elif hoy <= limite_pin and periodo.ventana_enero_marzo:
+            requiere_pins = True
         else:
-            return Response({"detail":"Anulación prohibida después del 31 de marzo."}, status=403)
+            return Response({"detail": "Fuera de la ventana permitida para anulación."}, status=403)
 
-        # Crear asiento de ajuste (inverso)
+        if requiere_pins:
+            from django.conf import settings
+            contador_pin = request.data.get("contador_pin")
+            gerente_pin  = request.data.get("gerente_pin")
+            ok_cont = bool(contador_pin) and (contador_pin == getattr(settings, "CONTADOR_PIN", None))
+            ok_ger  = bool(gerente_pin)  and (gerente_pin  == getattr(settings, "GERENTE_PIN", None))
+            if not (ok_cont and ok_ger):
+                return Response({"detail": "Se requieren PINs válidos de Contador y Gerente."}, status=403)
+
+        motivo = request.data.get("motivo", "")
+
+        # Crear asiento de ajuste (inverso) y marcar anulado
         ajuste = AsientoContable.objects.create(
             fecha = hoy,
             concepto = f"AJUSTE POR ANULACIÓN del asiento #{asiento.id}",
             tercero = asiento.tercero,
             descripcion_adicional = f"Motivo: {motivo}",
         )
-        # invierte movimientos
         for m in asiento.movimientos.all():
             MovimientoContable.objects.create(
                 asiento = ajuste,
@@ -88,7 +112,6 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
                 credito = m.debito,
             )
 
-        # Marcar original como anulado + auditoría
         asiento.estado = "anulado"
         asiento.anulado_por = request.user
         asiento.anulado_en = timezone.now()
@@ -96,191 +119,215 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
         asiento.ajusta_a = ajuste
         asiento.save()
 
-        return Response({"detail":"Asiento anulado y ajuste generado", "ajuste_id": ajuste.id}, status=200)
+        return Response({"detail": "Asiento anulado y ajuste generado", "ajuste_id": ajuste.id}, status=200)
 
     def get_queryset(self):
         """
         Opcionalmente filtra los asientos por un rango de fechas.
         """
-        queryset = super().get_queryset()
-        fecha_inicio = self.request.query_params.get('fecha_inicio')
-        fecha_fin = self.request.query_params.get('fecha_fin')
-
-        if fecha_inicio:
-            queryset = queryset.filter(fecha__gte=fecha_inicio)
-        if fecha_fin:
-            queryset = queryset.filter(fecha__lte=fecha_fin)
-
-        return queryset
+        qs = super().get_queryset()
+        fi = _parse_date(self.request.query_params.get('fecha_inicio'))
+        ff = _parse_date(self.request.query_params.get('fecha_fin'))
+        if fi:
+            qs = qs.filter(fecha__gte=fi)
+        if ff:
+            qs = qs.filter(fecha__lte=ff)
+        return qs
 
 class LibroDiarioView(views.APIView):
     """
     Vista para generar el reporte de Libro Diario.
     Devuelve todos los movimientos contables ordenados por fecha.
     """
-    
-
     def get(self, request):
-        fecha_inicio = request.query_params.get('fecha_inicio')
-        fecha_fin = request.query_params.get('fecha_fin')
+        fi = _parse_date(request.query_params.get('fecha_inicio'))
+        ff = _parse_date(request.query_params.get('fecha_fin'))
 
-        movimientos = MovimientoContable.objects.select_related('asiento', 'cuenta').all().order_by('asiento__fecha', 'asiento__id')
+        movimientos = (
+            MovimientoContable.objects
+            .select_related('asiento', 'cuenta')
+            .order_by('asiento__fecha', 'asiento__id')
+        )
+        if fi:
+            movimientos = movimientos.filter(asiento__fecha__gte=fi)
+        if ff:
+            movimientos = movimientos.filter(asiento__fecha__lte=ff)
 
-        if fecha_inicio:
-            movimientos = movimientos.filter(asiento__fecha__gte=fecha_inicio)
-        if fecha_fin:
-            movimientos = movimientos.filter(asiento__fecha__lte=fecha_fin)
-
-        # Usamos un serializer simple para devolver solo los datos necesarios
         data = []
         for m in movimientos:
             data.append({
                 'fecha': m.asiento.fecha,
                 'asiento_id': m.asiento.id,
-                'tercero': m.asiento.tercero.nombre_razon_social,
+                'tercero': getattr(m.asiento.tercero, 'nombre_razon_social', None),
                 'codigo_cuenta': m.cuenta.codigo,
                 'nombre_cuenta': m.cuenta.nombre,
                 'concepto': m.asiento.concepto,
                 'debito': m.debito,
-                'credito': m.credito
+                'credito': m.credito,
             })
+        return Response(data, status=200)
 
-        return Response(data)
 
 class BalancePruebasView(views.APIView):
-    """
-    Vista para generar el reporte de Balance de Pruebas.
-    Agrupa los movimientos por cuenta y calcula los saldos débito y crédito.
-    """
-    
-
     def get(self, request):
-        from django.db.models import Sum
+        fi = _parse_date(request.query_params.get('fecha_inicio'))
+        ff = _parse_date(request.query_params.get('fecha_fin'))
 
-        fecha_inicio = request.query_params.get('fecha_inicio')
-        fecha_fin = request.query_params.get('fecha_fin')
-
-        # Obtenemos todas las cuentas para asegurar que aparecen incluso si no tienen movimiento
         cuentas = Cuenta.objects.all().order_by('codigo')
 
-        # Filtramos los movimientos por fecha
-        movimientos = MovimientoContable.objects.all()
-        if fecha_inicio:
-            movimientos = movimientos.filter(asiento__fecha__gte=fecha_inicio)
-        if fecha_fin:
-            movimientos = movimientos.filter(asiento__fecha__lte=fecha_fin)
+        # Movimientos del período
+        movs = MovimientoContable.objects.all()
+        if fi:
+            movs = movs.filter(asiento__fecha__gte=fi)
+        if ff:
+            movs = movs.filter(asiento__fecha__lte=ff)
 
-        # Agrupamos y sumamos
-        saldos = movimientos.values('cuenta__codigo', 'cuenta__nombre') \
-                            .annotate(total_debito=Sum('debito'), total_credito=Sum('credito')) \
-                            .order_by('cuenta__codigo')
-
-        # Creamos un diccionario para facilitar la búsqueda de saldos
-        saldos_dict = {
-            item['cuenta__codigo']: {
-                'total_debito': item['total_debito'],
-                'total_credito': item['total_credito']
-            } for item in saldos
+        periodo = movs.values('cuenta__codigo','cuenta__nombre') \
+                      .annotate(total_debito=Sum('debito'), total_credito=Sum('credito')) \
+                      .order_by('cuenta__codigo')
+        periodo_dict = {
+            x['cuenta__codigo']: {
+                'nombre': x['cuenta__nombre'],
+                'deb': x['total_debito'] or Decimal('0'),
+                'cre': x['total_credito'] or Decimal('0'),
+            } for x in periodo
         }
 
-        # Construimos la respuesta final
+        # Saldos anteriores (saldo inicial)
+        prev_dict = {}
+        if fi:
+            movs_prev = MovimientoContable.objects.filter(asiento__fecha__lt=fi)
+            prev = movs_prev.values('cuenta__codigo').annotate(deb=Sum('debito'), cre=Sum('credito'))
+            prev_dict = {
+                x['cuenta__codigo']: (x['deb'] or Decimal('0')) - (x['cre'] or Decimal('0'))
+                for x in prev
+            }
+
         reporte = []
-        total_debitos_final = 0
-        total_creditos_final = 0
+        total_ini = total_debitos = total_creditos = total_fin = Decimal('0')
 
-        for cuenta in cuentas:
-            saldo_info = saldos_dict.get(cuenta.codigo)
-            if saldo_info:
-                total_debito = saldo_info['total_debito']
-                total_credito = saldo_info['total_credito']
+        for cta in cuentas:
+            ini = prev_dict.get(cta.codigo, Decimal('0'))
+            deb = periodo_dict.get(cta.codigo, {}).get('deb', Decimal('0'))
+            cre = periodo_dict.get(cta.codigo, {}).get('cre', Decimal('0'))
+            if ini == 0 and deb == 0 and cre == 0:
+                continue
+            fin = ini + deb - cre
+            reporte.append({
+                'codigo_cuenta': cta.codigo,
+                'nombre_cuenta': cta.nombre,
+                'saldo_inicial': ini,
+                'total_debito': deb,
+                'total_credito': cre,
+                'saldo_final': fin,
+            })
+            total_ini       += ini
+            total_debitos   += deb
+            total_creditos  += cre
+            total_fin       += fin
 
-                if total_debito > 0 or total_credito > 0:
-                    reporte.append({
-                        'codigo_cuenta': cuenta.codigo,
-                        'nombre_cuenta': cuenta.nombre,
-                        'total_debito': total_debito,
-                        'total_credito': total_credito
-                    })
-                    total_debitos_final += total_debito
-                    total_creditos_final += total_credito
+        formato = request.query_params.get("formato")
+        if formato == "xlsx":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Balance de Prueba"
+
+            ws["A1"] = "NOMBRE DE LA EMPRESA + NIT"
+            ws["A2"] = f"Balance de Prueba   {ff or fi or ''}"
+            ws["A1"].font = ws["A2"].font = Font(bold=True)
+
+            headers = ["Cuenta","Nombre Cuenta contable","Saldo inicial","Débitos","Créditos","Saldo final"]
+            ws.append(headers)
+            for cell in ws[3]:
+                cell.font = Font(bold=True)
+
+            for row in reporte:
+                ws.append([
+                    row["codigo_cuenta"],
+                    row["nombre_cuenta"],
+                    float(row["saldo_inicial"]),
+                    float(row["total_debito"]),
+                    float(row["total_credito"]),
+                    float(row["saldo_final"]),
+                ])
+
+            ws.append(["","TOTAL", float(total_ini), float(total_debitos), float(total_creditos), float(total_fin)])
+            widths = [12, 40, 16, 14, 14, 16]
+            for i,w in enumerate(widths, start=1):
+                ws.column_dimensions[get_column_letter(i)].width = w
+                for cell in ws[get_column_letter(i)]:
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+
+            resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            resp["Content-Disposition"] = 'attachment; filename="balance_prueba.xlsx"'
+            wb.save(resp)
+            return resp
 
         return Response({
             'detalle': reporte,
             'sumas_iguales': {
-                'total_debitos': total_debitos_final,
-                'total_creditos': total_creditos_final,
-                'balance_correcto': total_debitos_final == total_creditos_final
+                'total_inicial': total_ini,
+                'total_debitos': total_debitos,
+                'total_creditos': total_creditos,
+                'total_final': total_fin,
             }
-        })
+        }, status=200)
+
 
 class LibroMayorView(views.APIView):
     """
-    Vista para generar el reporte de Libro Mayor para una cuenta específica.
+    Reporte de Libro Mayor para una cuenta (por código).
+    GET /api/contabilidad/libro-mayor/<codigo_cuenta>/?fecha_inicio=YYYY-MM-DD&fecha_fin=YYYY-MM-DD
     """
-    
-
     def get(self, request, codigo_cuenta):
-        from django.db.models import Sum, Q
-        from decimal import Decimal
-
         try:
-            cuenta = Cuenta.objects.get(pk=codigo_cuenta)
+            cuenta = Cuenta.objects.get(pk=codigo_cuenta)   # tu PK de cuenta es 'codigo'
         except Cuenta.DoesNotExist:
             return Response({"error": "La cuenta especificada no existe."}, status=404)
 
         fecha_inicio = request.query_params.get('fecha_inicio')
-        fecha_fin = request.query_params.get('fecha_fin')
+        fecha_fin    = request.query_params.get('fecha_fin')
 
-        # 1. Calcular Saldo Inicial
-        saldo_inicial = Decimal('0.00')
-        movimientos_anteriores = MovimientoContable.objects.filter(cuenta=cuenta)
+        # Saldo inicial
+        mov_prev = MovimientoContable.objects.filter(cuenta=cuenta)
         if fecha_inicio:
-            # Para el saldo inicial, consideramos todos los movimientos ANTES de la fecha de inicio.
-            movimientos_anteriores = movimientos_anteriores.filter(asiento__fecha__lt=fecha_inicio)
-        else:
-            # Si no hay fecha de inicio, no hay saldo inicial, empezamos desde cero.
-            movimientos_anteriores = MovimientoContable.objects.none()
+            mov_prev = mov_prev.filter(asiento__fecha__lt=fecha_inicio)
+        agg_prev = mov_prev.aggregate(total_debito=Sum('debito'), total_credito=Sum('credito'))
+        deb_prev = agg_prev['total_debito']  or Decimal('0')
+        cre_prev = agg_prev['total_credito'] or Decimal('0')
+        saldo_inicial = deb_prev - cre_prev
 
-        saldo_anterior_agg = movimientos_anteriores.aggregate(
-            total_debito=Sum('debito'),
-            total_credito=Sum('credito')
-        )
-        debito_anterior = saldo_anterior_agg['total_debito'] or Decimal('0.00')
-        credito_anterior = saldo_anterior_agg['total_credito'] or Decimal('0.00')
-        saldo_inicial = debito_anterior - credito_anterior
-
-        # 2. Obtener Movimientos del Período
-        movimientos_periodo = MovimientoContable.objects.filter(cuenta=cuenta)
+        # Movimientos del período
+        qs = MovimientoContable.objects.filter(cuenta=cuenta)
         if fecha_inicio:
-            movimientos_periodo = movimientos_periodo.filter(asiento__fecha__gte=fecha_inicio)
+            qs = qs.filter(asiento__fecha__gte=fecha_inicio)
         if fecha_fin:
-            movimientos_periodo = movimientos_periodo.filter(asiento__fecha__lte=fecha_fin)
+            qs = qs.filter(asiento__fecha__lte=fecha_fin)
+        qs = qs.select_related('asiento', 'asiento__tercero').order_by('asiento__fecha','asiento__id')
 
-        movimientos_periodo = movimientos_periodo.select_related('asiento', 'asiento__tercero').order_by('asiento__fecha', 'asiento__id')
-
-        # 3. Serializar y calcular saldo corriente
-        detalle_movimientos = []
-        saldo_corriente = saldo_inicial
-        for m in movimientos_periodo:
-            saldo_corriente += m.debito - m.credito
-            detalle_movimientos.append({
+        detalle = []
+        saldo = saldo_inicial
+        for m in qs:
+            saldo += m.debito - m.credito
+            detalle.append({
                 'fecha': m.asiento.fecha,
                 'asiento_id': m.asiento.id,
-                'tercero': m.asiento.tercero.nombre_razon_social,
+                'tercero': getattr(m.asiento.tercero, 'nombre_razon_social', None),
                 'concepto': m.asiento.concepto,
                 'debito': m.debito,
                 'credito': m.credito,
-                'saldo': saldo_corriente
+                'saldo': saldo,
             })
 
         return Response({
-            'cuenta': CuentaSerializer(cuenta).data,
+            'cuenta': {'codigo': cuenta.codigo, 'nombre': cuenta.nombre},
             'fecha_inicio_reporte': fecha_inicio,
             'fecha_fin_reporte': fecha_fin,
             'saldo_inicial': saldo_inicial,
-            'movimientos': detalle_movimientos,
-            'saldo_final': saldo_corriente
-        })
+            'movimientos': detalle,
+            'saldo_final': saldo,
+        }, status=200)
+
 
 class EstadoResultadosView(views.APIView):
     """
@@ -443,3 +490,5 @@ class MediosMagneticosView(views.APIView):
             'año': year,
             'registros': data
         })
+
+        
