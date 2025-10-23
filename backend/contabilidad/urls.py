@@ -1,3 +1,5 @@
+
+ #contabilidad/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
@@ -10,6 +12,8 @@ from .views import (
     BalanceGeneralView,
     MediosMagneticosView
 )
+
+
 
 # Creamos un router para registrar las vistas de la API
 router = DefaultRouter()
