@@ -19,6 +19,7 @@ from django.db.models import Sum
 from decimal import Decimal
 from datetime import datetime
 
+
 def _parse_date(val):
     if not val:
         return None
@@ -43,6 +44,7 @@ class CuentaViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CuentaSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ["codigo", "nombre"]
+    pagination_class = None
 
 class AsientoContableViewSet(viewsets.ModelViewSet):
     """
