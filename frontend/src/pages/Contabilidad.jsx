@@ -4,6 +4,7 @@ import { BookOpen, Plus, Search, Calendar, FileText, DollarSign } from "lucide-r
 import { useCuentas } from "../hooks/useCuentas";
 import { useAsientos, useCreateAsiento, useAnularAsiento } from "../hooks/useAsientos";
 import { useTerceros, useCreateTercero } from "../hooks/useTerceros";
+import { exportBalancePrueba } from "../utils/exports";
 
 // Modal simple reutilizable
 function Modal({ open, onClose, title, children, footer }) {
@@ -87,6 +88,9 @@ const [openAnular, setOpenAnular] = useState(null);
 const [pins, setPins] = useState({ motivo:"", contador_pin:"", gerente_pin:"" });
 const [openTercero, setOpenTercero] = useState(false);
 const [nuevoTer, setNuevoTer] = useState({ tipo_documento:"CC", numero_documento:"", nombre_razon_social:"", direccion:"", telefono:"", email:"" });
+const [exportMsg, setExportMsg] = useState("");
+
+
 
 // ---- datos (React Query) ----
 const { data: cuentas = [], isLoading: lCuentas, isError: eCuentas, error: errCuentas } = useCuentas({ search });
@@ -332,9 +336,12 @@ function parseApiError(err) {
         </div>
       </div>
 
-      <button onClick={onExport} className="px-3 py-2 border rounded hover:bg-gray-50">
-        Exportar Excel
-      </button>
+        <button
+          onClick={() => exportBalancePrueba({ inicio: fechaInicio, fin: fechaFin })}
+          className="inline-flex items-center px-2 py-1 rounded border-0 bg-[#fbcfe8] text-[#3b0764] hover:bg-[#e5bdfb]"
+        >
+          Exportar Balance Prueba
+        </button>
 
       {/* Lista de Asientos */}
       <div className="bg-white shadow-sm rounded-lg border border-gray-200">
