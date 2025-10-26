@@ -4,26 +4,33 @@ import { useNavigate } from 'react-router-dom';
 import { authService } from '../services/auth';
 import { Building2, Lock, User, AlertCircle } from 'lucide-react';
 
+
+
+
+
+
 const Login = () => {
+  
   const [credentials, setCredentials] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
+  e.preventDefault();
+  setError('');
+  setLoading(true);
+  try {
+    await authService.login(credentials.username, credentials.password);
+    navigate('/dashboard');
+  } catch {
+    setError('Credenciales inválidas. Por favor intente de nuevo.');
+  } finally {
+    setLoading(false);
+  }
+};
 
-    try {
-      await authService.login(credentials.username, credentials.password);
-      navigate('/dashboard');
-    } catch (err) {
-      setError('Credenciales inválidas. Por favor intente de nuevo.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500">

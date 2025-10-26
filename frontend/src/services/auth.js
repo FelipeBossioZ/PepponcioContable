@@ -1,75 +1,51 @@
 // frontend/src/services/auth.js
-import axios from 'axios';
-import Cookies from 'js-cookie';
+const BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
-const API_URL = 'http://localhost:8000/api';
-
-// Configurar axios para incluir el token en todas las peticiones
-axios.interceptors.request.use(
-  config => {
-    const token = Cookies.get('access_token');
-    if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`;
-    }
-    return config;
-  },
-  error => Promise.reject(error)
-);
-
-// Interceptor para refrescar token si expira
-axios.interceptors.response.use(
-  response => response,
-  async error => {
-    const originalRequest = error.config;
-    
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
-      
-      try {
-        const refreshToken = Cookies.get('refresh_token');
-        const response = await axios.post(`${API_URL}/token/refresh/`, {
-          refresh: refreshToken
-        });
-        
-        Cookies.set('access_token', response.data.access);
-        axios.defaults.headers.common['Authorization'] = `Bearer ${response.data.access}`;
-        
-        return axios(originalRequest);
-      } catch (refreshError) {
-        // Redirigir a login si el refresh falla
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
-      }
-    }
-    
-    return Promise.reject(error);
-  }
-);
+const ACCESS_KEY  = "access_token";
+const REFRESH_KEY = "refresh_token";
 
 export const authService = {
-  login: async (username, password) => {
-    try {
-      const response = await axios.post(`${API_URL}/token/`, {
-        username,
-        password
-      });
-      
-      Cookies.set('access_token', response.data.access);
-      Cookies.set('refresh_token', response.data.refresh);
-      
-      return response.data;
-    } catch (error) {
-      throw error;
-    }
+  getAccessToken()  { return localStorage.getItem(ACCESS_KEY);  },
+  getRefreshToken() { return localStorage.getItem(REFRESH_KEY); },
+  setTokens({ access, refresh }) {
+    if (access)  localStorage.setItem(ACCESS_KEY,  access);
+    if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
   },
-  
-  logout: () => {
-    Cookies.remove('access_token');
-    Cookies.remove('refresh_token');
-    window.location.href = '/login';
+  clearTokens() {
+    localStorage.removeItem(ACCESS_KEY);
+    localStorage.removeItem(REFRESH_KEY);
   },
-  
-  isAuthenticated: () => {
-    return !!Cookies.get('access_token');
-  }
+  isAuthenticated() { return !!localStorage.getItem(ACCESS_KEY); },
+
+  async login(username, password) {
+    const res = await fetch(`${BASE}/api/token/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) throw new Error("bad-credentials");
+    const data = await res.json(); // { access, refresh }
+    this.setTokens(data);
+    return data;
+  },
+
+  async refreshAccessToken() {
+    const refresh = this.getRefreshToken();
+    if (!refresh) throw new Error("no-refresh-token");
+    const res = await fetch(`${BASE}/api/token/refresh/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh }),
+    });
+    if (!res.ok) throw new Error("refresh-failed");
+    const data = await res.json();
+    if (data?.access)  localStorage.setItem(ACCESS_KEY,  data.access);
+    if (data?.refresh) localStorage.setItem(REFRESH_KEY, data.refresh);
+    return data?.access;
+  },
+
+  logout() {
+    this.clearTokens();
+    window.location.href = "/login";
+  },
 };

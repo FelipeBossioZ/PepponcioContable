@@ -18,6 +18,9 @@ from django.http import HttpResponse
 from django.db.models import Sum
 from decimal import Decimal
 from datetime import datetime
+from rest_framework.permissions import IsAdminUser
+from .serializers import PeriodoContableSerializer
+
 
 
 def _parse_date(val):
@@ -29,6 +32,94 @@ def _parse_date(val):
         except ValueError:
             continue
     return None
+
+class PeriodoView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.utils import timezone
+        anio = request.query_params.get("anio")
+        if not anio:
+            anio = timezone.localdate().year
+        else:
+            anio = int(anio)
+        obj, _ = PeriodoContable.objects.get_or_create(anio=anio, defaults={"estado":"abierto"})
+        return Response(PeriodoContableSerializer(obj).data)
+
+    def patch(self, request):
+        # sólo admin puede editar
+        self.permission_classes = [IsAdminUser]
+        anio = int(request.data.get("anio"))
+        try:
+            obj = PeriodoContable.objects.get(anio=anio)
+        except PeriodoContable.DoesNotExist:
+            return Response({"detail": "Periodo no existe."}, status=404)
+        ser = PeriodoContableSerializer(obj, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save(cerrado_por=request.user if ser.validated_data.get("estado") == "cerrado" else obj.cerrado_por)
+        return Response(ser.data)
+
+class AuxiliarPorTerceroView(views.APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        tercero_id  = request.query_params.get('tercero_id')
+        fecha_inicio= request.query_params.get('fecha_inicio')
+        fecha_fin   = request.query_params.get('fecha_fin')
+        formato     = request.query_params.get('formato')
+
+        if not tercero_id:
+            return Response({"error":"tercero_id requerido"}, status=400)
+
+        qs = (MovimientoContable.objects
+              .select_related("asiento","cuenta","asiento__tercero")
+              .filter(asiento__tercero_id=tercero_id))
+        if fecha_inicio: qs = qs.filter(asiento__fecha__gte=fecha_inicio)
+        if fecha_fin:    qs = qs.filter(asiento__fecha__lte=fecha_fin)
+        qs = qs.order_by('asiento__fecha','asiento_id','id')
+
+        # saldo inicial (antes del rango)
+        prev = MovimientoContable.objects.filter(asiento__tercero_id=tercero_id)
+        if fecha_inicio: prev = prev.filter(asiento__fecha__lt=fecha_inicio)
+        agg = prev.aggregate(d=Sum("debito"), c=Sum("credito"))
+        saldo = (agg["d"] or 0) - (agg["c"] or 0)
+
+        if formato == "xlsx":
+            wb = Workbook(); ws = wb.active; ws.title="Auxiliar por tercero"
+            ws.append(["Auxiliar por tercero", f"ID {tercero_id}"])
+            ws.append([f"Rango: {fecha_inicio or '----'} a {fecha_fin or '----'}"])
+            ws.append([])
+            ws.append(["Saldo inicial", float(saldo)])
+            ws.append([])
+            ws.append(["Fecha","Asiento #","Cuenta","Nombre","Concepto","Débito","Crédito","Saldo"])
+            for cell in ws[6]: cell.font = Font(bold=True)
+
+            for m in qs:
+                saldo += m.debito - m.credito
+                ws.append([
+                    m.asiento.fecha.isoformat(), m.asiento.id, m.cuenta.codigo, m.cuenta.nombre,
+                    m.asiento.concepto, float(m.debito), float(m.credito), float(saldo)
+                ])
+
+            for col, w in enumerate([12,12,12,32,36,14,14,14], start=1):
+                ws.column_dimensions[get_column_letter(col)].width = w
+            ws.freeze_panes = "A7"
+
+            resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            resp["Content-Disposition"] = 'attachment; filename="auxiliar_tercero.xlsx"'
+            wb.save(resp); return resp
+
+        # JSON simple
+        data = []
+        for m in qs:
+            saldo += m.debito - m.credito
+            data.append({
+                "fecha": m.asiento.fecha, "asiento_id": m.asiento.id,
+                "cuenta": m.cuenta.codigo, "nombre_cuenta": m.cuenta.nombre,
+                "concepto": m.asiento.concepto, "debito": m.debito,
+                "credito": m.credito, "saldo": saldo
+            })
+        return Response({"saldo_inicial":saldo, "movimientos":data})
+
 
 
 
@@ -137,178 +228,170 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
         return qs
 
 class LibroDiarioView(views.APIView):
-    """
-    Vista para generar el reporte de Libro Diario.
-    Devuelve todos los movimientos contables ordenados por fecha.
-    """
     def get(self, request):
-        fi = _parse_date(request.query_params.get('fecha_inicio'))
-        ff = _parse_date(request.query_params.get('fecha_fin'))
+        fecha_inicio = request.query_params.get('fecha_inicio')
+        fecha_fin    = request.query_params.get('fecha_fin')
+        formato      = request.query_params.get('formato')
 
-        movimientos = (
-            MovimientoContable.objects
-            .select_related('asiento', 'cuenta')
-            .order_by('asiento__fecha', 'asiento__id')
-        )
-        if fi:
-            movimientos = movimientos.filter(asiento__fecha__gte=fi)
-        if ff:
-            movimientos = movimientos.filter(asiento__fecha__lte=ff)
+        qs = (MovimientoContable.objects
+              .select_related('asiento', 'cuenta', 'asiento__tercero')
+              .order_by('asiento__fecha', 'asiento__id', 'id'))
+        if fecha_inicio: qs = qs.filter(asiento__fecha__gte=fecha_inicio)
+        if fecha_fin:    qs = qs.filter(asiento__fecha__lte=fecha_fin)
 
-        data = []
-        for m in movimientos:
-            data.append({
-                'fecha': m.asiento.fecha,
-                'asiento_id': m.asiento.id,
-                'tercero': getattr(m.asiento.tercero, 'nombre_razon_social', None),
-                'codigo_cuenta': m.cuenta.codigo,
-                'nombre_cuenta': m.cuenta.nombre,
-                'concepto': m.asiento.concepto,
-                'debito': m.debito,
-                'credito': m.credito,
-            })
-        return Response(data, status=200)
+        if formato == "xlsx":
+            wb = Workbook(); ws = wb.active; ws.title = "Libro Diario"
+            ws.append(["Fecha","Asiento #","Tercero","Cuenta","Nombre cuenta","Concepto","Débito","Crédito"])
+            for cell in ws[1]: cell.font = Font(bold=True)
+            for m in qs:
+                ws.append([
+                    m.asiento.fecha.isoformat(),
+                    m.asiento.id,
+                    getattr(m.asiento.tercero, 'nombre_razon_social', "") or "",
+                    m.cuenta.codigo, m.cuenta.nombre,
+                    m.asiento.concepto,
+                    float(m.debito), float(m.credito),
+                ])
+            for col, w in enumerate([12,12,30,12,32,36,14,14], start=1):
+                ws.column_dimensions[get_column_letter(col)].width = w
+            ws.freeze_panes = "A2"
+            resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            resp["Content-Disposition"] = 'attachment; filename="libro_diario.xlsx"'
+            wb.save(resp); return resp
+
+        # JSON (ligero)
+        data = [{
+            'fecha': m.asiento.fecha,
+            'asiento_id': m.asiento.id,
+            'tercero': getattr(m.asiento.tercero, 'nombre_razon_social', None),
+            'codigo_cuenta': m.cuenta.codigo,
+            'nombre_cuenta': m.cuenta.nombre,
+            'concepto': m.asiento.concepto,
+            'debito': m.debito, 'credito': m.credito
+        } for m in qs]
+        return Response(data)
+
 
 
 class BalancePruebasView(views.APIView):
     def get(self, request):
-        fi = _parse_date(request.query_params.get('fecha_inicio'))
-        ff = _parse_date(request.query_params.get('fecha_fin'))
+        from collections import defaultdict
+
+        fecha_inicio = request.query_params.get('fecha_inicio')
+        fecha_fin    = request.query_params.get('fecha_fin')
+        formato      = request.query_params.get('formato')
 
         cuentas = Cuenta.objects.all().order_by('codigo')
 
-        # Movimientos del período
         movs = MovimientoContable.objects.all()
-        if fi:
-            movs = movs.filter(asiento__fecha__gte=fi)
-        if ff:
-            movs = movs.filter(asiento__fecha__lte=ff)
+        if fecha_inicio: movs = movs.filter(asiento__fecha__gte=fecha_inicio)
+        if fecha_fin:    movs = movs.filter(asiento__fecha__lte=fecha_fin)
 
-        periodo = movs.values('cuenta__codigo','cuenta__nombre') \
-                      .annotate(total_debito=Sum('debito'), total_credito=Sum('credito')) \
-                      .order_by('cuenta__codigo')
-        periodo_dict = {
-            x['cuenta__codigo']: {
-                'nombre': x['cuenta__nombre'],
-                'deb': x['total_debito'] or Decimal('0'),
-                'cre': x['total_credito'] or Decimal('0'),
-            } for x in periodo
-        }
+        # Saldo inicial (antes del rango)
+        prev = MovimientoContable.objects.all()
+        if fecha_inicio: prev = prev.filter(asiento__fecha__lt=fecha_inicio)
 
-        # Saldos anteriores (saldo inicial)
-        prev_dict = {}
-        if fi:
-            movs_prev = MovimientoContable.objects.filter(asiento__fecha__lt=fi)
-            prev = movs_prev.values('cuenta__codigo').annotate(deb=Sum('debito'), cre=Sum('credito'))
-            prev_dict = {
-                x['cuenta__codigo']: (x['deb'] or Decimal('0')) - (x['cre'] or Decimal('0'))
-                for x in prev
+        saldo_inicial = defaultdict(lambda: Decimal('0'))
+        for p in prev.values('cuenta__codigo').annotate(d=Sum('debito'), c=Sum('credito')):
+            codigo = p['cuenta__codigo']
+            d = p['d'] or 0; c = p['c'] or 0
+            saldo_inicial[codigo] = Decimal(d) - Decimal(c)
+
+        # Débitos/Créditos del período
+        period = {}
+        for s in (movs.values('cuenta__codigo', 'cuenta__nombre')
+                       .annotate(total_debito=Sum('debito'), total_credito=Sum('credito'))
+                       .order_by('cuenta__codigo')):
+            codigo = s['cuenta__codigo']
+            period[codigo] = {
+                'nombre': s['cuenta__nombre'],
+                'deb': Decimal(s['total_debito'] or 0),
+                'cre': Decimal(s['total_credito'] or 0)
             }
 
         reporte = []
-        total_ini = total_debitos = total_creditos = total_fin = Decimal('0')
-
+        tot_deb = Decimal('0'); tot_cre = Decimal('0')
         for cta in cuentas:
-            ini = prev_dict.get(cta.codigo, Decimal('0'))
-            deb = periodo_dict.get(cta.codigo, {}).get('deb', Decimal('0'))
-            cre = periodo_dict.get(cta.codigo, {}).get('cre', Decimal('0'))
-            if ini == 0 and deb == 0 and cre == 0:
-                continue
+            cod = cta.codigo
+            ini = saldo_inicial[cod]
+            deb = period.get(cod, {}).get('deb', Decimal('0'))
+            cre = period.get(cod, {}).get('cre', Decimal('0'))
             fin = ini + deb - cre
-            reporte.append({
-                'codigo_cuenta': cta.codigo,
-                'nombre_cuenta': cta.nombre,
-                'saldo_inicial': ini,
-                'total_debito': deb,
-                'total_credito': cre,
-                'saldo_final': fin,
-            })
-            total_ini       += ini
-            total_debitos   += deb
-            total_creditos  += cre
-            total_fin       += fin
+            # Mostrar filas con movimiento o con saldos:
+            if ini != 0 or deb != 0 or cre != 0 or fin != 0:
+                reporte.append({
+                    'codigo_cuenta': cod,
+                    'nombre_cuenta': cta.nombre,
+                    'saldo_inicial': ini,
+                    'total_debito':  deb,
+                    'total_credito': cre,
+                    'saldo_final':   fin,
+                })
+                tot_deb += deb; tot_cre += cre
 
-        formato = request.query_params.get("formato")
         if formato == "xlsx":
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Balance de Prueba"
-
-            ws["A1"] = "NOMBRE DE LA EMPRESA + NIT"
-            ws["A2"] = f"Balance de Prueba   {ff or fi or ''}"
-            ws["A1"].font = ws["A2"].font = Font(bold=True)
-
-            headers = ["Cuenta","Nombre Cuenta contable","Saldo inicial","Débitos","Créditos","Saldo final"]
-            ws.append(headers)
-            for cell in ws[3]:
-                cell.font = Font(bold=True)
+            wb = Workbook(); ws = wb.active; ws.title = "Balance de Prueba"
+            ws.append(["Empresa / NIT"]) ; ws.append([f"Balance de Prueba  {fecha_inicio or ''} a {fecha_fin or ''}"])
+            for i in (1,2): ws[f"A{i}"].font = Font(bold=True)
+            ws.append([])
+            ws.append(["Cuenta","Nombre","Saldo inicial","Débitos","Créditos","Saldo final"])
+            for cell in ws[4]: cell.font = Font(bold=True)
 
             for row in reporte:
                 ws.append([
-                    row["codigo_cuenta"],
-                    row["nombre_cuenta"],
-                    float(row["saldo_inicial"]),
-                    float(row["total_debito"]),
-                    float(row["total_credito"]),
-                    float(row["saldo_final"]),
+                    row["codigo_cuenta"], row["nombre_cuenta"],
+                    float(row["saldo_inicial"]), float(row["total_debito"]),
+                    float(row["total_credito"]), float(row["saldo_final"])
                 ])
+            ws.append([])
+            ws.append(["", "TOTALES", "", float(tot_deb), float(tot_cre), ""])
 
-            ws.append(["","TOTAL", float(total_ini), float(total_debitos), float(total_creditos), float(total_fin)])
-            widths = [12, 40, 16, 14, 14, 16]
-            for i,w in enumerate(widths, start=1):
-                ws.column_dimensions[get_column_letter(i)].width = w
-                for cell in ws[get_column_letter(i)]:
-                    cell.alignment = Alignment(horizontal="left", vertical="center")
+            for col, w in enumerate([12,36,16,14,14,16], start=1):
+                ws.column_dimensions[get_column_letter(col)].width = w
+            ws.freeze_panes = "A5"
 
             resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             resp["Content-Disposition"] = 'attachment; filename="balance_prueba.xlsx"'
-            wb.save(resp)
-            return resp
+            wb.save(resp); return resp
 
         return Response({
             'detalle': reporte,
             'sumas_iguales': {
-                'total_inicial': total_ini,
-                'total_debitos': total_debitos,
-                'total_creditos': total_creditos,
-                'total_final': total_fin,
+                'total_debitos':  tot_deb,
+                'total_creditos': tot_cre,
+                'balance_correcto': tot_deb == tot_cre
             }
         }, status=200)
 
 
+
 class LibroMayorView(views.APIView):
-    """
-    Reporte de Libro Mayor para una cuenta (por código).
-    GET /api/contabilidad/libro-mayor/<codigo_cuenta>/?fecha_inicio=YYYY-MM-DD&fecha_fin=YYYY-MM-DD
-    """
     def get(self, request, codigo_cuenta):
         try:
-            cuenta = Cuenta.objects.get(pk=codigo_cuenta)   # tu PK de cuenta es 'codigo'
+            cuenta = Cuenta.objects.get(pk=codigo_cuenta)
         except Cuenta.DoesNotExist:
             return Response({"error": "La cuenta especificada no existe."}, status=404)
 
         fecha_inicio = request.query_params.get('fecha_inicio')
         fecha_fin    = request.query_params.get('fecha_fin')
+        formato      = request.query_params.get('formato')
 
-        # Saldo inicial
-        mov_prev = MovimientoContable.objects.filter(cuenta=cuenta)
-        if fecha_inicio:
-            mov_prev = mov_prev.filter(asiento__fecha__lt=fecha_inicio)
-        agg_prev = mov_prev.aggregate(total_debito=Sum('debito'), total_credito=Sum('credito'))
+        # saldo inicial (antes de fecha_inicio)
+        prev = MovimientoContable.objects.filter(cuenta=cuenta)
+        if fecha_inicio: prev = prev.filter(asiento__fecha__lt=fecha_inicio)
+        agg_prev = prev.aggregate(total_debito=Sum('debito'), total_credito=Sum('credito'))
         deb_prev = agg_prev['total_debito']  or Decimal('0')
         cre_prev = agg_prev['total_credito'] or Decimal('0')
         saldo_inicial = deb_prev - cre_prev
 
-        # Movimientos del período
+        # movimientos del período
         qs = MovimientoContable.objects.filter(cuenta=cuenta)
-        if fecha_inicio:
-            qs = qs.filter(asiento__fecha__gte=fecha_inicio)
-        if fecha_fin:
-            qs = qs.filter(asiento__fecha__lte=fecha_fin)
-        qs = qs.select_related('asiento', 'asiento__tercero').order_by('asiento__fecha','asiento__id')
+        if fecha_inicio: qs = qs.filter(asiento__fecha__gte=fecha_inicio)
+        if fecha_fin:    qs = qs.filter(asiento__fecha__lte=fecha_fin)
+        qs = qs.select_related('asiento','asiento__tercero').order_by('asiento__fecha','asiento__id','id')
 
-        detalle = []
         saldo = saldo_inicial
+        detalle = []
         for m in qs:
             saldo += m.debito - m.credito
             detalle.append({
@@ -316,10 +399,35 @@ class LibroMayorView(views.APIView):
                 'asiento_id': m.asiento.id,
                 'tercero': getattr(m.asiento.tercero, 'nombre_razon_social', None),
                 'concepto': m.asiento.concepto,
-                'debito': m.debito,
-                'credito': m.credito,
+                'debito': m.debito, 'credito': m.credito,
                 'saldo': saldo,
             })
+
+        if formato == "xlsx":
+            wb = Workbook(); ws = wb.active; ws.title = f"Mayor {cuenta.codigo}"
+            ws.append([f"Libro Mayor — {cuenta.codigo} {cuenta.nombre}"])
+            ws.append([f"Rango: {fecha_inicio or '----'} a {fecha_fin or '----'}"])
+            ws.append([])
+
+            ws.append(["Saldo inicial", float(saldo_inicial)])
+            ws.append([])
+            ws.append(["Fecha","Asiento #","Tercero","Concepto","Débito","Crédito","Saldo"])
+            for cell in ws[6]: cell.font = Font(bold=True)
+
+            for row in detalle:
+                ws.append([
+                    row["fecha"].isoformat(), row["asiento_id"], row["tercero"] or "",
+                    row["concepto"], float(row["debito"]), float(row["credito"]), float(row["saldo"])
+                ])
+
+            ws.append([])
+            ws.append(["Saldo final", float(saldo)])
+            for col, w in enumerate([12,12,30,36,14,14,14], start=1):
+                ws.column_dimensions[get_column_letter(col)].width = w
+            ws.freeze_panes = "A7"
+            resp = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            resp["Content-Disposition"] = f'attachment; filename="libro_mayor_{cuenta.codigo}.xlsx"'
+            wb.save(resp); return resp
 
         return Response({
             'cuenta': {'codigo': cuenta.codigo, 'nombre': cuenta.nombre},
@@ -329,6 +437,7 @@ class LibroMayorView(views.APIView):
             'movimientos': detalle,
             'saldo_final': saldo,
         }, status=200)
+
 
 
 class EstadoResultadosView(views.APIView):

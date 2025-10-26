@@ -5,8 +5,18 @@ from django.utils import timezone
 from rest_framework import serializers
 from .models import Cuenta, AsientoContable, MovimientoContable
 from terceros.models import Tercero 
+from rest_framework import serializers
+from .models import PeriodoContable
+
 
 TWOPLACES = Decimal("0.01")
+
+
+class PeriodoContableSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PeriodoContable
+        fields = ("anio", "estado", "ventana_enero_marzo", "cerrado_por", "cerrado_en", "notas")
+        read_only_fields = ("cerrado_por", "cerrado_en")
 
 # --- Plan de cuentas ---
 class CuentaSerializer(serializers.ModelSerializer):

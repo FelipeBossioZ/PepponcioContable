@@ -6,13 +6,72 @@ from rest_framework.permissions import AllowAny  # DEV; en prod usa IsAuthentica
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from django.http import HttpResponse
-
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import mm
-
 from .models import Factura, ItemFactura
 from .serializers import FacturaSerializer
+from rest_framework.views import APIView
+from reportlab.lib.pagesizes import A4
+
+
+class FacturaPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        # factura = Factura.objects.select_related('cliente').prefetch_related('items').get(pk=pk)
+        resp = HttpResponse(content_type="application/pdf")
+        resp["Content-Disposition"] = f'inline; filename="factura_{pk}.pdf"'
+        c = canvas.Canvas(resp, pagesize=A4)
+        w, h = A4
+
+        # Header
+        y = h - 20*mm
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(20*mm, y, "TU EMPRESA S.A.S.  •  NIT 900.000.000-1")
+
+        y -= 8*mm
+        c.setFont("Helvetica", 10)
+        c.drawString(20*mm, y, f"Factura No. {pk}   •   Fecha: ____/____/_____")
+
+        # Cliente
+        y -= 12*mm
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(20*mm, y, "Cliente:")
+        c.setFont("Helvetica", 10)
+        c.drawString(40*mm, y, "NOMBRE DEL CLIENTE  •  NIT/CC 123456789")
+
+        # Tabla simple (encabezados)
+        y -= 12*mm
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(20*mm, y, "Descripción")
+        c.drawString(120*mm, y, "Cantidad")
+        c.drawString(145*mm, y, "Vlr Unit")
+        c.drawString(170*mm, y, "Total")
+
+        # Items (ejemplo)
+        c.setFont("Helvetica", 10)
+        y -= 8*mm
+        for i in range(1, 6):
+            c.drawString(20*mm, y, f"Ítem {i}")
+            c.drawRightString(135*mm, y, "1")
+            c.drawRightString(160*mm, y, "$100.000")
+            c.drawRightString(190*mm, y, "$100.000")
+            y -= 7*mm
+
+        # Totales
+        y -= 10*mm
+        c.setFont("Helvetica-Bold", 11)
+        c.drawRightString(190*mm, y, "TOTAL: $500.000")
+
+        # Firma / QR placeholder
+        y -= 20*mm
+        c.setFont("Helvetica", 9)
+        c.drawString(20*mm, y, "Firma y sello autorizado")
+        c.rect(20*mm, y-15*mm, 60*mm, 15*mm)
+
+        c.showPage(); c.save()
+        return resp
 
 
 class FacturaViewSet(viewsets.ModelViewSet):

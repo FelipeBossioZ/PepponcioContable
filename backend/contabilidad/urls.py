@@ -10,7 +10,8 @@ from .views import (
     LibroMayorView,
     EstadoResultadosView,
     BalanceGeneralView,
-    MediosMagneticosView
+    MediosMagneticosView,
+    PeriodoView, AuxiliarPorTerceroView
 )
 
 
@@ -30,4 +31,6 @@ urlpatterns = [
     path('reportes/estado-resultados/', EstadoResultadosView.as_view(), name='estado-resultados'),
     path('reportes/balance-general/', BalanceGeneralView.as_view(), name='balance-general'),
     path('reportes/medios-magneticos/<str:formato>/', MediosMagneticosView.as_view(), name='medios-magneticos'),
+    path('periodo/', PeriodoView.as_view(), name='periodo'),
+    path('reportes/auxiliar-tercero/', AuxiliarPorTerceroView.as_view(), name='auxiliar-tercero'),
 ]

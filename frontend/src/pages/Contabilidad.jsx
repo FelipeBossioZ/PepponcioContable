@@ -5,6 +5,14 @@ import { useCuentas } from "../hooks/useCuentas";
 import { useAsientos, useCreateAsiento, useAnularAsiento } from "../hooks/useAsientos";
 import { useTerceros, useCreateTercero } from "../hooks/useTerceros";
 import { exportBalancePrueba } from "../utils/exports";
+import { toast } from "../ui/ToastHost";
+// toast("Export listo");
+// toast("Selecciona rango de fechas", "error");
+
+
+
+
+
 
 // Modal simple reutilizable
 function Modal({ open, onClose, title, children, footer }) {
@@ -120,6 +128,9 @@ const textoPeriodo = useMemo(() => {
     : `Periodo: ${y} — Anulación según estado del periodo.`;
 }, [form.fecha]);
 
+//const yearSel = new Date(form.fecha || todayISO()).getFullYear();
+//const { data: periodo } = usePeriodo(yearSel);
+
 // ====== HANDLERS dentro del componente ======
 const onChangeIni = (e) => { const v=e.target.value; setFechaInicio(v); if(!fechaFin && v) setFechaFin(lastDayOfMonth(v)); setPage(1); };
 const onChangeFin = (e) => { const v=e.target.value; setFechaFin(v);   if(!fechaInicio && v) setFechaInicio(firstDayOfMonth(v)); setPage(1); };
@@ -173,14 +184,14 @@ const matchCuentas = (q) => {
 const delRow = (i)=>{ setMovRows(rows=>{ if(rows.length<=2) return rows; return rows.filter((_r,idx)=> idx!==i); });
   setRowErrors(prev=>{ if(!prev[i]) return prev; const next={...prev}; delete next[i]; return next; }); };
 
-const BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-const onExport = ()=> {
-  const p = new URLSearchParams();
-  if(fechaInicio) p.append("fecha_inicio", fechaInicio);
-  if(fechaFin)    p.append("fecha_fin", fechaFin);
-  p.append("formato","xlsx");
-  window.open(`${BASE}/api/contabilidad/reportes/balance-pruebas/?${p.toString()}`,"_blank");
-};
+//const BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+//const onExport = ()=> {
+  //const p = new URLSearchParams();
+  //if(fechaInicio) p.append("fecha_inicio", fechaInicio);
+  //if(fechaFin)    p.append("fecha_fin", fechaFin);
+  //p.append("formato","xlsx");
+  //window.open(`${BASE}/api/contabilidad/reportes/balance-pruebas/?${p.toString()}`,"_blank");
+//};
  
   // totales + validación
 const totalDeb = useMemo(()=> movRows.reduce((s,r)=> s + (Number(r.debito)||0), 0), [movRows]);
@@ -335,13 +346,24 @@ function parseApiError(err) {
           <p className="text-xs text-gray-500 mt-2">{total} asientos</p>
         </div>
       </div>
-
         <button
-          onClick={() => exportBalancePrueba({ inicio: fechaInicio, fin: fechaFin })}
-          className="inline-flex items-center px-2 py-1 rounded border-0 bg-[#fbcfe8] text-[#3b0764] hover:bg-[#e5bdfb]"
-        >
-          Exportar Balance Prueba
-        </button>
+  onClick={async () => {
+    if (!fechaInicio && !fechaFin) return toast("Selecciona rango de fechas", "error");
+        try {
+          await exportBalancePrueba({ inicio: fechaInicio, fin: fechaFin });
+          toast("Export listo");
+        } catch (e) {
+          toast("No se pudo exportar", "error");
+          console.error(e);
+        }
+      }}
+      className="inline-flex items-center px-2 py-1 rounded border-0 bg-[#fbcfe8] text-[#3b0764] hover:bg-[#e5bdfb]"
+    >
+      Exportar Balance Prueba
+    </button>
+
+        
+
 
       {/* Lista de Asientos */}
       <div className="bg-white shadow-sm rounded-lg border border-gray-200">
@@ -655,6 +677,8 @@ function parseApiError(err) {
             </div>
           )}
 
+          
+
 
           <div className="flex justify-end gap-2">
             <button type="button" className="px-3 py-2 rounded border" onClick={() => setOpenForm(false)}>
@@ -671,8 +695,9 @@ function parseApiError(err) {
           
           {/* RÓTULO DEL PERIODO (fila completa) */}
           <div className="col-span-full w-full">
-            <p className="mt-2 w-full text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 rounded px-3 py-2">
-                {textoPeriodo}
+            <p className="mt-2 text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 rounded px-3 py-2">
+              {textoPeriodo}
+             
             </p>
           </div>
 
