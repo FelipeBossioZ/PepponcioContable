@@ -8,6 +8,13 @@ import TercerosPage from './pages/Terceros';
 import Contabilidad from './pages/Contabilidad';
 import Facturacion from './pages/Facturacion';
 import { authService } from './services/auth';
+//import Reportes from "./pages/Reportes";
+import ToastHost from "./ui/ToastHost";
+
+
+import Reportes from "./pages/reportes"; // 👈 cuida el casing según tu archivo real
+
+
 
 // Componente para rutas protegidas
 const ProtectedRoute = ({ children }) => {
@@ -18,6 +25,7 @@ const ProtectedRoute = ({ children }) => {
 function App() {
   return (
     <BrowserRouter>
+      <ToastHost /> 
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/" element={
@@ -25,13 +33,17 @@ function App() {
             <Layout />
           </ProtectedRoute>
         }>
+         
           <Route index element={<Navigate to="/dashboard" />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="terceros" element={<TercerosPage />} />
           <Route path="contabilidad" element={<Contabilidad />} />
           <Route path="facturacion" element={<Facturacion />} />
+          <Route path="/reportes" element={<Reportes />} />
         </Route>
+        
       </Routes>
+      
     </BrowserRouter>
   );
 }
