@@ -18,7 +18,26 @@ from django.http import HttpResponse
 from django.db.models import Sum
 from decimal import Decimal
 from datetime import datetime
+from rest_framework.decorators import api_view, permission_classes
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def periodo_view(request):
+    anio = int(request.query_params.get('anio'))
+    p = PeriodoContable.ensure(anio)
+    return Response({
+        "anio": p.anio,
+        "estado": p.estado,
+        "ajustes": {
+            "inicio": p.ajustes_inicio.isoformat(),
+            "fin":    p.ajustes_fin.isoformat(),
+            "requiere_pins": p.requiere_pins_en_ajustes,
+        },
+        "mes13": {
+            "habilitado": p.habilitar_mes13,
+            "etiqueta": "Mes 13 (Ajustes de cierre)"
+        }
+    })
 
 def _parse_date(val):
     if not val:
@@ -55,10 +74,22 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
     ya que los asientos no deben modificarse (se deben crear asientos de ajuste).
     """
     permission_classes = [IsAuthenticated]
-    
     queryset = AsientoContable.objects.prefetch_related("movimientos").all()
     serializer_class = AsientoContableSerializer
-    http_method_names = ['get', 'post', 'head', 'options'] # Deshabilitar PUT, PATCH, DELETE
+    http_method_names = ['get', 'post', 'head', 'options']  # Deshabilitar PUT, PATCH, DELETE
+
+    def get_queryset(self):
+        """
+        Opcionalmente filtra los asientos por un rango de fechas (?fecha_inicio, ?fecha_fin).
+        """
+        qs = super().get_queryset()
+        fi = _parse_date(self.request.query_params.get('fecha_inicio'))
+        ff = _parse_date(self.request.query_params.get('fecha_fin'))
+        if fi:
+            qs = qs.filter(fecha__gte=fi)
+        if ff:
+            qs = qs.filter(fecha__lte=ff)
+        return qs
 
     @action(detail=True, methods=["post"], url_path="anular")
     def anular(self, request, pk=None):
@@ -67,24 +98,28 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
             return Response({"detail": "El asiento ya está anulado."}, status=400)
 
         hoy = timezone.localdate()
-        periodo = PeriodoContable.periodo_para_fecha(asiento.fecha)  # periodo del año del asiento
+        # Tomamos el año fiscal del asiento si existe, si no, el de la fecha
+        anio_fiscal = asiento.fiscal_year or asiento.fecha.year
+        periodo = PeriodoContable.ensure(anio_fiscal)
 
-        # Reglas:
-        #  - Si el periodo del asiento está "cerrado": prohibido.
-        #  - Si está "abierto" y hoy <= 31/12 del mismo año: anula sin PIN.
-        #  - Si hoy es 01/01–31/03 del año siguiente y 'ventana_enero_marzo' = True: requiere PINs.
-        #  - Fuera de esas ventanas: prohibido.
+        # Estado del periodo
         if periodo.estado == "cerrado":
-            return Response({"detail": f"El periodo {periodo.anio} está CERRADO. Anulación prohibida."}, status=403)
+            return Response(
+                {"detail": f"El periodo {periodo.anio} está CERRADO. Anulación prohibida."},
+                status=403
+            )
 
-        limite_libre = date(asiento.fecha.year, 12, 31)
-        limite_pin   = date(asiento.fecha.year + 1, 3, 31)
-
+        # Regla de ventanas:
+        #  - Hasta 31/12 del año fiscal: anula sin PIN
+        #  - Durante la ventana de ajustes (enero–marzo del año siguiente): requiere PIN si está configurado
+        #  - Fuera de eso: prohibido
+        limite_libre = date(anio_fiscal, 12, 31)
         requiere_pins = False
+
         if hoy <= limite_libre:
             requiere_pins = False
-        elif hoy <= limite_pin and periodo.ventana_enero_marzo:
-            requiere_pins = True
+        elif periodo.in_ajustes(hoy) and hoy.year == anio_fiscal + 1:
+            requiere_pins = bool(periodo.requiere_pins_en_ajustes)
         else:
             return Response({"detail": "Fuera de la ventana permitida para anulación."}, status=403)
 
@@ -101,17 +136,17 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
 
         # Crear asiento de ajuste (inverso) y marcar anulado
         ajuste = AsientoContable.objects.create(
-            fecha = hoy,
-            concepto = f"AJUSTE POR ANULACIÓN del asiento #{asiento.id}",
-            tercero = asiento.tercero,
-            descripcion_adicional = f"Motivo: {motivo}",
+            fecha=hoy,
+            concepto=f"AJUSTE POR ANULACIÓN del asiento #{asiento.id}",
+            tercero=asiento.tercero,
+            descripcion_adicional=f"Motivo: {motivo}",
         )
         for m in asiento.movimientos.all():
             MovimientoContable.objects.create(
-                asiento = ajuste,
-                cuenta = m.cuenta,
-                debito = m.credito,
-                credito = m.debito,
+                asiento=ajuste,
+                cuenta=m.cuenta,
+                debito=m.credito,
+                credito=m.debito,
             )
 
         asiento.estado = "anulado"
@@ -122,19 +157,6 @@ class AsientoContableViewSet(viewsets.ModelViewSet):
         asiento.save()
 
         return Response({"detail": "Asiento anulado y ajuste generado", "ajuste_id": ajuste.id}, status=200)
-
-    def get_queryset(self):
-        """
-        Opcionalmente filtra los asientos por un rango de fechas.
-        """
-        qs = super().get_queryset()
-        fi = _parse_date(self.request.query_params.get('fecha_inicio'))
-        ff = _parse_date(self.request.query_params.get('fecha_fin'))
-        if fi:
-            qs = qs.filter(fecha__gte=fi)
-        if ff:
-            qs = qs.filter(fecha__lte=ff)
-        return qs
 
 class LibroDiarioView(views.APIView):
     """
